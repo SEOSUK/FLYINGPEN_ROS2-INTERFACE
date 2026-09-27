@@ -3,8 +3,8 @@ robot_types:
     firmware_params:
       su_wrench:
         mass: 0.045000  # observer mass model [kg]
-        comOffX: -0.000210  # body-frame CoM offset x [m]
-        comOffY: -0.000313  # body-frame CoM offset y [m]
+        comOffX: -0.000640  # body-frame CoM offset x [m]
+        comOffY: -0.000102  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
         rOffX: 0.085
         rOffY: 0.0
@@ -16,17 +16,17 @@ robot_types:
         preloadGv: 0.0  # effective gain from normal velocity leakage to command
         preloadNu: 0.3  # [m/s], symmetric saturation bound for normal velocity command
 
-        normBeta: 6.0  # [1/s] beta ≈ 2*pi*f_c, decay rate of the normal-axis memory matrix (normal이 굼뜨면 베타 올려)
-        normGamma: 4.0  # [1/s] normal-estimate tracking gain (너무 예민하면 감마낮춰)
+        normBeta: 4.0  # [1/s] beta ≈ 2*pi*f_c, decay rate of the normal-axis memory matrix (normal이 굼뜨면 베타 올려)
+        normGamma: 2.0  # [1/s] normal-estimate tracking gain (너무 예민하면 감마낮춰)
         normEpsV: 0.0016  # [m^2/s^2], velocity-projection regularization epsilon_v
-        normEpsF: 100.015  # [N], minimum force evidence norm epsilon_f
+        normEpsF: 0.001  # [N], minimum force evidence norm epsilon_f
 
-        velModEn: 0  # 0: disabled, 1: manual tangential velocity modulation enabled
+        velModEn: 1  # 0: disabled, 1: manual tangential velocity modulation enabled
         velModABar: 0.013  # [m/s^2], geometry-induced normal acceleration bound
-        velModVMin: 0.01  # [m/s], minimum contact speed for curvature update
+        velModVMin: 0.001  # [m/s], minimum contact speed for curvature update
         contactVelLPF: 0.4  # [Hz], shared contact-velocity LPF cutoff
-        velModNDotLPF: 0.1  # [Hz], normal-derivative LPF cutoff for curvature estimation
-        velModKLPF: 0.05  # [Hz], curvature-estimate LPF cutoff
+        velModNDotLPF: 0.0  # [Hz], normal-derivative LPF cutoff for curvature estimation
+        velModKLPF: 0.5  # [Hz], curvature-estimate LPF cutoff
 
         epsilonFMin: 1.01  # [N], yaw-alignment smoothing starts when |F_xy| exceeds this
         epsilonFMax: 2.025  # [N], yaw-alignment reaches full weight when |F_xy| exceeds this

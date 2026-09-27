@@ -575,21 +575,32 @@ if any(isfinite(normal_est(:)))
 end
 
 %% 3.2) Plot: firmware velocity modulation telemetry
-velocity_modulation_xlim = [196 326];
+velocity_modulation_xlim = [185 275];
 velocity_modulation_n_hat_dot_ylims = {[-0.5 0.5], [-0.5 0.5], [-0.5 0.5]};
 velocity_modulation_kappa_ylim = [0 15];
 velocity_modulation_alpha_ylim = [0.0 1.05];
+velocity_modulation_position_ylims = {[], [], []};
 velocity_modulation_vc_ylims = {[-0.3 0.3], [-0.3 0.3]};
 velocity_modulation_vc_axis_names = {'t_1', 't_2'};
 
-if any(isfinite([n_hat_dot(:); kappa_hat(:); alpha_star(:)]))
-    figure('Name', 'Firmware Velocity Modulation', 'Color', 'w', ...
-        'Position', [150 50 1100 950]);
-    tiledlayout(5, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
-    velocity_modulation_axes = gobjects(5, 1);
+if any(isfinite([n_hat_dot(:); kappa_hat(:); alpha_star(:); pose_xyz(:)]))
+    velocity_modulation_figure = figure( ...
+        'Name', 'Firmware Velocity Modulation', 'Color', 'w', ...
+        'Position', [100 50 1500 950]);
+    left_panel = uipanel('Parent', velocity_modulation_figure, ...
+        'Position', [0.00 0.00 0.50 1.00], 'BorderType', 'none', ...
+        'BackgroundColor', 'w');
+    right_panel = uipanel('Parent', velocity_modulation_figure, ...
+        'Position', [0.50 0.00 0.50 1.00], 'BorderType', 'none', ...
+        'BackgroundColor', 'w');
+    left_layout = tiledlayout(left_panel, 5, 1, ...
+        'TileSpacing', 'compact', 'Padding', 'compact');
+    right_layout = tiledlayout(right_panel, 4, 1, ...
+        'TileSpacing', 'compact', 'Padding', 'compact');
+    velocity_modulation_axes = gobjects(9, 1);
 
     for i = 1:3
-        ax = nexttile;
+        ax = nexttile(left_layout);
         velocity_modulation_axes(i) = ax;
         plot(ax, time, n_hat_dot(:, i), 'LineWidth', 1.3);
         grid(ax, 'on');
@@ -599,7 +610,7 @@ if any(isfinite([n_hat_dot(:); kappa_hat(:); alpha_star(:)]))
             velocity_modulation_n_hat_dot_ylims{i});
     end
 
-    ax = nexttile;
+    ax = nexttile(left_layout);
     velocity_modulation_axes(4) = ax;
     plot(ax, time, kappa_hat, 'LineWidth', 1.3);
     grid(ax, 'on');
@@ -607,7 +618,7 @@ if any(isfinite([n_hat_dot(:); kappa_hat(:); alpha_star(:)]))
     title(ax, 'Firmware curvature estimate');
     local_apply_limits(ax, velocity_modulation_xlim, velocity_modulation_kappa_ylim);
 
-    ax = nexttile;
+    ax = nexttile(left_layout);
     velocity_modulation_axes(5) = ax;
     plot(ax, time, alpha_star, 'LineWidth', 1.3);
     grid(ax, 'on');
@@ -615,6 +626,27 @@ if any(isfinite([n_hat_dot(:); kappa_hat(:); alpha_star(:)]))
     ylabel(ax, 'alpha star [-]');
     title(ax, 'Firmware velocity-modulation scale');
     local_apply_limits(ax, velocity_modulation_xlim, velocity_modulation_alpha_ylim);
+
+    for i = 1:3
+        ax = nexttile(right_layout);
+        velocity_modulation_axes(5 + i) = ax;
+        plot(ax, time, pose_xyz(:, i), 'LineWidth', 1.3);
+        grid(ax, 'on');
+        ylabel(ax, sprintf('p_%s [m]', axis_names{i}));
+        title(ax, sprintf('Position: %s axis', axis_names{i}));
+        local_apply_limits(ax, velocity_modulation_xlim, ...
+            velocity_modulation_position_ylims{i});
+    end
+
+    ax = nexttile(right_layout);
+    velocity_modulation_axes(9) = ax;
+    plot(ax, time, kappa_hat, 'LineWidth', 1.3);
+    grid(ax, 'on');
+    xlabel(ax, 'time [s]');
+    ylabel(ax, 'kappa hat [1/m]');
+    title(ax, 'Firmware curvature estimate');
+    local_apply_limits(ax, velocity_modulation_xlim, velocity_modulation_kappa_ylim);
+
     linkaxes(velocity_modulation_axes, 'x');
 end
 
