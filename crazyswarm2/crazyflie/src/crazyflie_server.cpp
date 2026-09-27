@@ -685,10 +685,7 @@ private:
       msg->position_mode == crazyflie_interfaces::msg::PositionControl::MODE_VELOCITY
         ? crazyflie_interfaces::msg::PositionControl::MODE_VELOCITY
         : crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
-    const uint8_t requested_trajectory =
-      msg->trajectory_mode <= crazyflie_interfaces::msg::PositionControl::TRAJECTORY_2
-        ? msg->trajectory_mode
-        : crazyflie_interfaces::msg::PositionControl::TRAJECTORY_NONE;
+    const uint8_t requested_trajectory = crazyflie_interfaces::msg::PositionControl::TRAJECTORY_NONE;
     const uint8_t requested_reference =
       msg->command_reference == crazyflie_interfaces::msg::PositionControl::REFERENCE_END_EFFECTOR
         ? crazyflie_interfaces::msg::PositionControl::REFERENCE_END_EFFECTOR

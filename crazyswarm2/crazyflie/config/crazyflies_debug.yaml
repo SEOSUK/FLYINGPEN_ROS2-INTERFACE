@@ -38,12 +38,18 @@ robot_types:
         cf_gyro_body:
           frequency: 20
           vars: [gyro.x, gyro.y, gyro.z]
-        cf_imu_raw_pair:
-          frequency: 20
-          vars: [accRaw.x, accRaw.y, accRaw.z, acc.x, acc.y, acc.z]
+        # cf_imu_raw_pair:
+        #   frequency: 20
+        #   vars: [accRaw.x, accRaw.y, accRaw.z, acc.x, acc.y, acc.z]
         cf_su_acc_normal:
           frequency: 20
           vars: [suWrenchObs.accWx, suWrenchObs.accWy, suWrenchObs.accWz, suPosRef.nEstX, suPosRef.nEstY, suPosRef.nEstZ]
+        cf_su_velocity_modulation:
+          frequency: 20
+          vars: [suVelMod.nHatDotX, suVelMod.nHatDotY, suVelMod.nHatDotZ, suVelMod.kappaHat, suVelMod.alphaStar]
+        cf_vel_modulation_v_c:
+          frequency: 20
+          vars: [suVelMod.vcX, suVelMod.vcY, suVelMod.vcZ]
         # cf_su_normal_debug:
         #   frequency: 20
         #   vars: [suPosRef.nPreX, suPosRef.nPreY, suPosRef.nPreZ, suPosRef.nPostX, suPosRef.nPostY, suPosRef.nPostZ]
@@ -61,15 +67,12 @@ robot_types:
         # cf_su_normal_metrics:
         #   frequency: 20
         #   vars: [suPosRef.vEeX, suPosRef.vEeY, suPosRef.vEeZ, suPosRef.omgN, suPosRef.nVelLeak]
-        # cf_su_alpha_frame:
-        #   frequency: 20
-        #   vars: [suPosRef.alphaFrm, suPosRef.t1CmdDes, suPosRef.t2CmdDes]
         vel_att_des:
           frequency: 10
-          vars: [posCtl.targetVX, posCtl.targetVY, posCtl.targetVZ, controller.roll, controller.pitch, controller.yaw]
-        cf_ctrl_misc:
-          frequency: 10
-          vars: [pm.vbat, ctrltarget.x, ctrltarget.y, ctrltarget.z]
+          vars: [posCtl.targetVX, posCtl.targetVY, posCtl.targetVZ]
+        # cf_ctrl_misc:
+        #   frequency: 10
+        #   vars: [pm.vbat, ctrltarget.x, ctrltarget.y, ctrltarget.z]
         # cf_stabilizer_timing:
         #   frequency: 20
         #   vars: [stabilizer.loopDtUs, stabilizer.loopDtUsMax]
@@ -86,8 +89,8 @@ robot_types:
         extPosStdDev: 1e-3
         extQuatStdDev: 0.5e-1
       imu_sensors:
-        accTrimRoll: -0.90
-        accTrimPitch: 0.34
+        accTrimRoll: -0.47
+        accTrimPitch: 0.17
 
 
       kalman:

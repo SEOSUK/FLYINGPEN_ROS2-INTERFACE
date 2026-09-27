@@ -125,6 +125,10 @@ pose_xyz = [
     local_get1(T, vars, "pose_x"), ...
     local_get1(T, vars, "pose_y"), ...
     local_get1(T, vars, "pose_z")];
+cmd_xyz = [
+    local_get1(T, vars, "cmd_x"), ...
+    local_get1(T, vars, "cmd_y"), ...
+    local_get1(T, vars, "cmd_z")];
 fw_cmd_xyz = [
     local_get1(T, vars, "fwCmd_x"), ...
     local_get1(T, vars, "fwCmd_y"), ...
@@ -222,6 +226,16 @@ normal_est = [
     local_get1(T, vars, "normalEst_x"), ...
     local_get1(T, vars, "normalEst_y"), ...
     local_get1(T, vars, "normalEst_z")];
+n_hat_dot = [
+    local_get1(T, vars, "n_hat_dot_x"), ...
+    local_get1(T, vars, "n_hat_dot_y"), ...
+    local_get1(T, vars, "n_hat_dot_z")];
+kappa_hat = local_get1(T, vars, "kappa_hat");
+alpha_star = local_get1(T, vars, "alpha_star");
+curvature_vc = [
+    local_get1(T, vars, "curvature_vc_x"), ...
+    local_get1(T, vars, "curvature_vc_y"), ...
+    local_get1(T, vars, "curvature_vc_z")];
 force_desired = local_get1(T, vars, "forceDesired");
 contact_force_delta = firmware_contact_force - firmware_raw_force;
 
@@ -258,6 +272,7 @@ offline_mob_force_none = local_compute_offline_pure_mob( ...
 valid_time = isfinite(time);
 time = time(valid_time);
 pose_xyz = pose_xyz(valid_time, :);
+cmd_xyz = cmd_xyz(valid_time, :);
 fw_cmd_xyz = fw_cmd_xyz(valid_time, :);
 pose_rpy = pose_rpy(valid_time, :);
 ee_xyz = ee_xyz(valid_time, :);
@@ -284,6 +299,10 @@ firmware_eta_hat = firmware_eta_hat(valid_time);
 firmware_eta_match_force = firmware_eta_match_force(valid_time, :);
 firmware_eta_residual = firmware_eta_residual(valid_time, :);
 normal_est = normal_est(valid_time, :);
+n_hat_dot = n_hat_dot(valid_time, :);
+kappa_hat = kappa_hat(valid_time);
+alpha_star = alpha_star(valid_time);
+curvature_vc = curvature_vc(valid_time, :);
 force_desired = force_desired(valid_time);
 contact_force_delta = contact_force_delta(valid_time, :);
 offline_mob_force_none = offline_mob_force_none(valid_time, :);
@@ -299,6 +318,18 @@ offline_new_contact_force = offline_new_contact_force(valid_time, :);
 wall_true_normal_world = wall_true_normal_world(valid_time, :);
 wall_true_tangent1_world = wall_true_tangent1_world(valid_time, :);
 wall_true_tangent2_world = wall_true_tangent2_world(valid_time, :);
+[velocity_modulation_t1_world, velocity_modulation_t2_world] = ...
+    local_compute_normal_frame_tangents(normal_est);
+% cmd_y/cmd_z are the raw t1/t2 command channels. Reconstruct the velocity-
+% modulated commands offline and rotate the measured world velocity into the
+% instantaneous normal-estimate tangent frame.
+velocity_modulation_cmd_initial = cmd_xyz(:, 2:3);
+velocity_modulation_cmd_modulated = [ ...
+    alpha_star .* velocity_modulation_cmd_initial(:, 1), ...
+    alpha_star .* velocity_modulation_cmd_initial(:, 2)];
+velocity_modulation_meas = [ ...
+    local_project_rows(curvature_vc, velocity_modulation_t1_world), ...
+    local_project_rows(curvature_vc, velocity_modulation_t2_world)];
 acc_raw_body_g_lpf = local_first_order_lpf(acc_raw_body_g, imu_lpf_alpha);
 acc_body_g_lpf = local_first_order_lpf(acc_body_g, imu_lpf_alpha);
 wall_normal_frame_rpy = local_basis_to_rpy( ...
@@ -317,6 +348,7 @@ fprintf("[INFO] Offline calibration source = %s\n", char(offline_calib_source));
 fprintf("[INFO] Offline calibration mass/com = %.6f kg, [%.6f %.6f %.6f] m\n", ...
     offline_mob_mass_kg, offline_com_offset_body);
 local_print_availability("drone position", pose_xyz);
+local_print_availability("raw t1/t2 velocity command", velocity_modulation_cmd_initial);
 local_print_availability("firmware drone position setpoint", fw_cmd_xyz);
 local_print_availability("end-effector position", ee_xyz);
 local_print_availability("drone attitude", pose_rpy);
@@ -356,6 +388,11 @@ local_print_availability("firmware eta_T", firmware_eta_hat);
 local_print_availability("firmware eta_T matched force", firmware_eta_match_force);
 local_print_availability("firmware eta_T residual", firmware_eta_residual);
 local_print_availability("estimated normal", normal_est);
+local_print_availability("velocity modulation n_hat_dot", n_hat_dot);
+local_print_availability("velocity modulation kappa_hat", kappa_hat);
+local_print_availability("velocity modulation alpha_star", alpha_star);
+local_print_availability("velocity modulation command (t1/t2)", velocity_modulation_cmd_modulated);
+local_print_availability("velocity modulation measurement (t1/t2)", velocity_modulation_meas);
 local_print_availability("force command", force_desired);
 fprintf("[INFO] Offline MOB mass %.6f kg, Kp %.6f, Kf %.3f, dt mode %s\n", ...
     offline_mob_mass_kg, offline_mob_Kp, offline_mob_Kf, char(offline_mob_dt_mode));
@@ -484,9 +521,81 @@ if any(isfinite(normal_est(:)))
     local_apply_limits(ax_topdown, normal_topdown_xlim, normal_topdown_ylim);
 end
 
+%% 3.2) Plot: firmware velocity modulation telemetry
+velocity_modulation_xlim = [196 326];
+velocity_modulation_n_hat_dot_ylims = {[-0.5 0.5], [-0.5 0.5], [-0.5 0.5]};
+velocity_modulation_kappa_ylim = [0 15];
+velocity_modulation_alpha_ylim = [0.0 1.05];
+velocity_modulation_vc_ylims = {[-0.3 0.3], [-0.3 0.3]};
+velocity_modulation_vc_axis_names = {'t_1', 't_2'};
+
+if any(isfinite([n_hat_dot(:); kappa_hat(:); alpha_star(:)]))
+    figure('Name', 'Firmware Velocity Modulation', 'Color', 'w', ...
+        'Position', [150 50 1100 950]);
+    tiledlayout(5, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+    velocity_modulation_axes = gobjects(5, 1);
+
+    for i = 1:3
+        ax = nexttile;
+        velocity_modulation_axes(i) = ax;
+        plot(ax, time, n_hat_dot(:, i), 'LineWidth', 1.3);
+        grid(ax, 'on');
+        ylabel(ax, sprintf('d n_%s/dt [1/s]', axis_names{i}));
+        title(ax, sprintf('Firmware n hat dot: %s axis', axis_names{i}));
+        local_apply_limits(ax, velocity_modulation_xlim, ...
+            velocity_modulation_n_hat_dot_ylims{i});
+    end
+
+    ax = nexttile;
+    velocity_modulation_axes(4) = ax;
+    plot(ax, time, kappa_hat, 'LineWidth', 1.3);
+    grid(ax, 'on');
+    ylabel(ax, 'kappa hat [1/m]');
+    title(ax, 'Firmware curvature estimate');
+    local_apply_limits(ax, velocity_modulation_xlim, velocity_modulation_kappa_ylim);
+
+    ax = nexttile;
+    velocity_modulation_axes(5) = ax;
+    plot(ax, time, alpha_star, 'LineWidth', 1.3);
+    grid(ax, 'on');
+    xlabel(ax, 'time [s]');
+    ylabel(ax, 'alpha star [-]');
+    title(ax, 'Firmware velocity-modulation scale');
+    local_apply_limits(ax, velocity_modulation_xlim, velocity_modulation_alpha_ylim);
+    linkaxes(velocity_modulation_axes, 'x');
+end
+
+if any(isfinite([velocity_modulation_cmd_initial(:); ...
+        velocity_modulation_cmd_modulated(:); velocity_modulation_meas(:)]))
+    figure('Name', 'Firmware Velocity Modulation: t1/t2 Comparison', 'Color', 'w', ...
+        'Position', [200 100 1100 800]);
+    tiledlayout(2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+    velocity_modulation_vc_axes = gobjects(2, 1);
+    for i = 1:2
+        ax = nexttile;
+        velocity_modulation_vc_axes(i) = ax;
+        hold(ax, 'on');
+        plot(ax, time, velocity_modulation_cmd_initial(:, i), '--', ...
+            'LineWidth', 1.3, 'Color', [0.35 0.35 0.35]);
+        plot(ax, time, velocity_modulation_cmd_modulated(:, i), '-', ...
+            'LineWidth', 1.5, 'Color', [0.0000 0.4470 0.7410]);
+        plot(ax, time, velocity_modulation_meas(:, i), '-', ...
+            'LineWidth', 1.3, 'Color', [0.8500 0.3250 0.0980]);
+        grid(ax, 'on');
+        ylabel(ax, sprintf('v_{%s} [m/s]', velocity_modulation_vc_axis_names{i}));
+        title(ax, sprintf('Velocity command and measurement: %s axis', ...
+            velocity_modulation_vc_axis_names{i}));
+        legend(ax, {'initial command', 'velocity-modulated command', 'measured'}, ...
+            'Location', 'best');
+        local_apply_limits(ax, velocity_modulation_xlim, velocity_modulation_vc_ylims{i});
+    end
+    xlabel(velocity_modulation_vc_axes(end), 'time [s]');
+    linkaxes(velocity_modulation_vc_axes, 'x');
+end
+
 %% 4) Plot: drone position
 drone_position_xlim = [];              % e.g. [10 80], [] keeps auto x-limits
-drone_position_ylims = {[-0.05 0.05], [-0.05 0.05], [0.95 1.05]};   % x/y/z y-limits
+drone_position_ylims = {[], [], []};   % x/y/z y-limits
 
 figure('Name', 'Drone Position', 'Color', 'w');
 tiledlayout(3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
@@ -1339,6 +1448,46 @@ function [normal_world_all, tangent1_world_all, tangent2_world_all] = ...
         tangent1_world_all(k, :) = cross(tangent2_world_all(k, :), normal_world);
         tangent1_world_all(k, :) = tangent1_world_all(k, :) ./ norm(tangent1_world_all(k, :));
     end
+end
+
+function [t1_rows, t2_rows] = local_compute_normal_frame_tangents(normal_rows)
+    n = size(normal_rows, 1);
+    t1_rows = nan(n, 3);
+    t2_rows = nan(n, 3);
+    world_z = [0.0, 0.0, 1.0];
+    world_y = [0.0, 1.0, 0.0];
+
+    for k = 1:n
+        normal = normal_rows(k, :);
+        if any(~isfinite(normal)) || norm(normal) < 1.0e-6
+            continue;
+        end
+        normal = normal ./ norm(normal);
+
+        t1 = cross(world_z, normal);
+        if norm(t1) < 1.0e-6
+            t1 = cross(world_y, normal);
+        end
+        if norm(t1) < 1.0e-6
+            continue;
+        end
+        t1 = t1 ./ norm(t1);
+
+        t2 = cross(normal, t1);
+        if norm(t2) < 1.0e-6
+            continue;
+        end
+        t2 = t2 ./ norm(t2);
+
+        t1_rows(k, :) = t1;
+        t2_rows(k, :) = t2;
+    end
+end
+
+function projection = local_project_rows(vector_rows, axis_rows)
+    projection = nan(size(vector_rows, 1), 1);
+    valid = all(isfinite(vector_rows), 2) & all(isfinite(axis_rows), 2);
+    projection(valid) = sum(vector_rows(valid, :) .* axis_rows(valid, :), 2);
 end
 
 function R = local_quat_xyzw_to_rotmat(q)

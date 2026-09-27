@@ -126,6 +126,10 @@ public:
   // 115      : etaHat [-]
   // 116..118 : forceBarF xyz [N], world frame
   // 119..121 : gyroBody xyz [deg/s], body frame
+  // 122..124 : n_hat_dot xyz [1/s], firmware normal-estimator derivative
+  // 125      : kappa_hat [1/m], firmware curvature estimate
+  // 126      : alpha_star [-], firmware velocity-modulation scale
+  // 127..129 : raw contact velocity xyz [m/s] used by firmware curvature estimate
   enum DebugIndex : std::size_t {
     IDX_RAW_MOB_FX = 106,
     IDX_RAW_MOB_FY,
@@ -143,6 +147,14 @@ public:
     IDX_GYRO_BODY_X,
     IDX_GYRO_BODY_Y,
     IDX_GYRO_BODY_Z,
+    IDX_N_HAT_DOT_X,
+    IDX_N_HAT_DOT_Y,
+    IDX_N_HAT_DOT_Z,
+    IDX_KAPPA_HAT,
+    IDX_ALPHA_STAR,
+    IDX_CURVATURE_VC_X,
+    IDX_CURVATURE_VC_Y,
+    IDX_CURVATURE_VC_Z,
     DEBUG_DATA_SIZE
   };
   static constexpr std::size_t kDataLen = DEBUG_DATA_SIZE;
@@ -151,6 +163,10 @@ public:
   static_assert(IDX_ETA_HAT == 115, "etaHat index must remain stable");
   static_assert(IDX_FORCE_BAR_FX == 116, "forceBar must be appended after the existing layout");
   static_assert(IDX_GYRO_BODY_X == 119, "body gyro must be append-only");
+  static_assert(IDX_N_HAT_DOT_X == 122, "velocity modulation telemetry must be append-only");
+  static_assert(IDX_ALPHA_STAR == 126, "velocity modulation telemetry layout changed");
+  static_assert(IDX_CURVATURE_VC_X == 127, "filtered contact velocity must be append-only");
+  static_assert(IDX_CURVATURE_VC_Z == 129, "filtered contact velocity layout changed");
 
   DataLoggingDebugNode()
   : Node("data_logging_debug")
@@ -223,6 +239,12 @@ public:
       cf_ns_ + "/cf_imu_raw_pair", 10, std::bind(&DataLoggingDebugNode::imuRawPairCallback, this, _1));
     sub_vel_att_des_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
       cf_ns_ + "/vel_att_des", 10, std::bind(&DataLoggingDebugNode::velAttDesCallback, this, _1));
+    sub_velocity_modulation_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
+      cf_ns_ + "/cf_su_velocity_modulation", 10,
+      std::bind(&DataLoggingDebugNode::velocityModulationCallback, this, _1));
+    sub_velocity_modulation_v_c_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
+      cf_ns_ + "/cf_vel_modulation_v_c", 10,
+      std::bind(&DataLoggingDebugNode::velocityModulationContactVelocityCallback, this, _1));
     sub_filename_tag_ = this->create_subscription<std_msgs::msg::String>(
       "/flying_pen/debug_log_filename_tag", 10,
       std::bind(&DataLoggingDebugNode::filenameTagCallback, this, _1));
@@ -293,6 +315,10 @@ public:
     out.data.push_back(eta_hat_);
     push3(out, force_bar_);
     push3(out, gyro_body_deg_s_);
+    push3(out, n_hat_dot_);
+    out.data.push_back(kappa_hat_);
+    out.data.push_back(alpha_star_);
+    push3(out, curvature_contact_velocity_);
 
     if (out.data.size() != static_cast<size_t>(kDataLen)) {
       out.data.resize(kDataLen, qnan_debug());
@@ -380,7 +406,9 @@ private:
       << "rawMobTx,rawMobTy,rawMobTz,"
       << "contactFx,contactFy,contactFz,etaHat,"
       << "forceBarFx,forceBarFy,forceBarFz,"
-      << "gyroBody_x,gyroBody_y,gyroBody_z\n";
+      << "gyroBody_x,gyroBody_y,gyroBody_z,"
+      << "n_hat_dot_x,n_hat_dot_y,n_hat_dot_z,kappa_hat,alpha_star,"
+      << "curvature_vc_x,curvature_vc_y,curvature_vc_z\n";
     csv_.flush();
   }
 
@@ -555,13 +583,35 @@ private:
   }
   void velAttDesCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
   {
-    if (msg->values.size() >= 6) {
+    if (msg->values.size() >= 3) {
       vel_des_[0] = msg->values[0];
       vel_des_[1] = msg->values[1];
       vel_des_[2] = msg->values[2];
+    }
+    if (msg->values.size() >= 6) {
       att_des_[0] = msg->values[3];
       att_des_[1] = msg->values[4];
       att_des_[2] = msg->values[5];
+    }
+  }
+  void velocityModulationCallback(
+    const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
+  {
+    if (msg->values.size() >= 5) {
+      n_hat_dot_[0] = msg->values[0];
+      n_hat_dot_[1] = msg->values[1];
+      n_hat_dot_[2] = msg->values[2];
+      kappa_hat_ = msg->values[3];
+      alpha_star_ = msg->values[4];
+    }
+  }
+  void velocityModulationContactVelocityCallback(
+    const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
+  {
+    if (msg->values.size() >= 3) {
+      curvature_contact_velocity_[0] = msg->values[0];
+      curvature_contact_velocity_[1] = msg->values[1];
+      curvature_contact_velocity_[2] = msg->values[2];
     }
   }
   void cmdPositionCallback(const crazyflie_interfaces::msg::Position::SharedPtr msg)
@@ -668,6 +718,8 @@ private:
   rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_alpha_frame_;
   rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_imu_raw_pair_;
   rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_vel_att_des_;
+  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_velocity_modulation_;
+  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_velocity_modulation_v_c_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_filename_tag_;
 
   std::string csv_dir_;
@@ -725,6 +777,11 @@ private:
   double t1_cmd_des_ = qnan_debug();
   double t2_cmd_des_ = qnan_debug();
   double force_desired_ = qnan_debug();
+  std::array<double, 3> n_hat_dot_ = {qnan_debug(), qnan_debug(), qnan_debug()};
+  double kappa_hat_ = qnan_debug();
+  double alpha_star_ = qnan_debug();
+  std::array<double, 3> curvature_contact_velocity_ = {
+    qnan_debug(), qnan_debug(), qnan_debug()};
   std::array<double, 3> wall_xyz_ = {qnan_debug(), qnan_debug(), qnan_debug()};
   std::array<double, 4> wall_quat_xyzw_ = {
     qnan_debug(), qnan_debug(), qnan_debug(), qnan_debug()};

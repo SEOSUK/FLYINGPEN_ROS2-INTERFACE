@@ -62,14 +62,10 @@ public:
     command_frame_ = this->declare_parameter<std::string>("command_frame", loadSharedCommandFrameDefault());
     end_effector_offset_ = declareVector3Parameter("end_effector_offset", loadSharedEndEffectorOffsetDefault());
 
-    trajectory_label_none_ = this->declare_parameter<std::string>("trajectory_none_label", "none");
-    trajectory_label_1_ = this->declare_parameter<std::string>("trajectory_1_label", "trajectory_run");
-
     cmd_xyz_yaw_.fill(0.0);
     force_des_ = 0.0;
     current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
     current_command_reference_ = parseCommandReference(command_frame_);
-    current_trajectory_mode_ = crazyflie_interfaces::msg::PositionControl::TRAJECTORY_NONE;
     mob_force_.fill(std::numeric_limits<double>::quiet_NaN());
     latest_battery_voltage_ = std::numeric_limits<double>::quiet_NaN();
     displayed_battery_voltage_ = std::numeric_limits<double>::quiet_NaN();
@@ -116,7 +112,6 @@ private:
 
   static constexpr int ROW_STATUS_HEADER = 6;
   static constexpr int ROW_STATUS_MODE = 8;
-  static constexpr int ROW_STATUS_TRAJ = 9;
   static constexpr int ROW_STATUS_FORCE = 10;
   static constexpr int ROW_STATUS_MOB = 11;
   static constexpr int ROW_STATUS_BATTERY = 12;
@@ -265,8 +260,6 @@ private:
     else if (c == 'u')  { setPositionMode(crazyflie_interfaces::msg::PositionControl::MODE_POSITION); }
     else if (c == 'f')  { publishKeyboardTrigger('f'); }
     else if (c == 'g')  { status_msg_ = "runtime command reference switching disabled"; pushInputHistory("g : reference switching disabled"); }
-    else if (c == 'n')  { setTrajectoryMode(crazyflie_interfaces::msg::PositionControl::TRAJECTORY_NONE); }
-    else if (c == 'm')  { setTrajectoryMode(crazyflie_interfaces::msg::PositionControl::TRAJECTORY_1); }
     else if (c == 'j')  { force_des_ += force_delta_; publishPositionControl(); updateForceStatus(); pushInputHistory("j : force += tick"); }
     else if (c == 'k')  { force_des_ -= force_delta_; publishPositionControl(); updateForceStatus(); pushInputHistory("k : force -= tick"); }
     else if (c == 'l')  { force_des_ = 0.0; publishPositionControl(); updateForceStatus(); pushInputHistory("l : force reset"); }
@@ -417,23 +410,6 @@ private:
     }
   }
 
-  void setTrajectoryMode(uint8_t trajectoryMode)
-  {
-    current_trajectory_mode_ = trajectoryMode;
-    publishPositionControl();
-
-    if (trajectoryMode == crazyflie_interfaces::msg::PositionControl::TRAJECTORY_NONE) {
-      status_msg_ = "trajectory stopped";
-      pushInputHistory("n : trajectory stop");
-    } else if (trajectoryMode == crazyflie_interfaces::msg::PositionControl::TRAJECTORY_1) {
-      status_msg_ = "trajectory running";
-      pushInputHistory("m : trajectory run");
-    } else {
-      status_msg_ = "trajectory running";
-      pushInputHistory("trajectory run");
-    }
-  }
-
   void resetActiveCommand()
   {
     if (usesVelocityCommands()) {
@@ -550,7 +526,7 @@ private:
     msg.header.stamp = this->get_clock()->now();
     msg.position_mode = current_mode_;
     msg.command_reference = current_command_reference_;
-    msg.trajectory_mode = current_trajectory_mode_;
+    msg.trajectory_mode = crazyflie_interfaces::msg::PositionControl::TRAJECTORY_NONE;
     msg.force_desired = static_cast<float>(force_des_);
     position_control_pub_->publish(msg);
   }
@@ -659,14 +635,6 @@ private:
     }
   }
 
-  std::string trajectoryLabel(uint8_t mode) const
-  {
-    if (mode == crazyflie_interfaces::msg::PositionControl::TRAJECTORY_1) {
-      return trajectory_label_1_;
-    }
-    return trajectory_label_none_;
-  }
-
   void drawSepLine(int row, const char * title)
   {
     move(row, 0);
@@ -680,12 +648,11 @@ private:
 
     drawSepLine(ROW_USAGE_HEADER, "usage");
     mvprintw(ROW_USAGE_1, 0, "velocity: w/s(x), a/d(y), e/q(z), z/c(yaw), x(zero vel), i(contact on)");
-    mvprintw(ROW_USAGE_2, 0, "velocity: w/s/a/d/e/q(v), u(contact off), n(stop), m(run)");
+    mvprintw(ROW_USAGE_2, 0, "velocity: w/s/a/d/e/q(v), u(contact off)");
     mvprintw(ROW_USAGE_3, 0, "force/cal: j/k/l (cmd_fx), f(hover CoM, keep mass), o/p arm/disarm, t quit");
 
     drawSepLine(ROW_STATUS_HEADER, "status");
     mvprintw(ROW_STATUS_MODE, 0, "mode: ");
-    mvprintw(ROW_STATUS_TRAJ, 0, "trajectory: ");
     mvprintw(ROW_STATUS_FORCE, 0, "force command: ");
     mvprintw(ROW_STATUS_MOB, 0, "MOB force: ");
     mvprintw(ROW_STATUS_BATTERY, 0, "battery voltage: ");
@@ -712,14 +679,6 @@ private:
       command_frame_.c_str(),
       position_tick_[0], position_tick_[1], position_tick_[2],
       velocity_tick_[0], velocity_tick_[1], velocity_tick_[2]);
-
-    move(ROW_STATUS_TRAJ, 0);
-    clrtoeol();
-    printw(
-      "trajectory: active=%s, n=%s, m=%s",
-      trajectoryLabel(current_trajectory_mode_).c_str(),
-      trajectory_label_none_.c_str(),
-      trajectory_label_1_.c_str());
 
     move(ROW_STATUS_FORCE, 0);
     clrtoeol();
@@ -806,13 +765,10 @@ private:
   double displayed_battery_voltage_;
   uint8_t current_mode_;
   uint8_t current_command_reference_;
-  uint8_t current_trajectory_mode_;
   bool has_latest_pose_;
   bool has_latest_fw_cmd_;
   bool command_initialized_{false};
   std::string command_frame_;
-  std::string trajectory_label_none_;
-  std::string trajectory_label_1_;
   std::string status_msg_;
   std::chrono::steady_clock::time_point last_battery_display_update_;
   std::chrono::steady_clock::time_point velocity_mode_command_ready_time_{};
