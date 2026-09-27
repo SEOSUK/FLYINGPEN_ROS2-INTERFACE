@@ -303,6 +303,8 @@ n_hat_dot = n_hat_dot(valid_time, :);
 kappa_hat = kappa_hat(valid_time);
 alpha_star = alpha_star(valid_time);
 curvature_vc = curvature_vc(valid_time, :);
+% CSV curvature_vc_x/y/z are sourced from firmware suVelMod.vcX/vcY/vcZ.
+filtered_contact_velocity = curvature_vc;
 force_desired = force_desired(valid_time);
 contact_force_delta = contact_force_delta(valid_time, :);
 offline_mob_force_none = offline_mob_force_none(valid_time, :);
@@ -393,11 +395,62 @@ local_print_availability("velocity modulation kappa_hat", kappa_hat);
 local_print_availability("velocity modulation alpha_star", alpha_star);
 local_print_availability("velocity modulation command (t1/t2)", velocity_modulation_cmd_modulated);
 local_print_availability("velocity modulation measurement (t1/t2)", velocity_modulation_meas);
+local_print_availability("filtered contact velocity", filtered_contact_velocity);
 local_print_availability("force command", force_desired);
 fprintf("[INFO] Offline MOB mass %.6f kg, Kp %.6f, Kf %.3f, dt mode %s\n", ...
     offline_mob_mass_kg, offline_mob_Kp, offline_mob_Kf, char(offline_mob_dt_mode));
 fprintf("[INFO] Offline point-contact MOB Ktau %.3f, KpTau %.6f, Ke %.3f, eta gamma %.3f\n", ...
     offline_pc_Ktau, offline_pc_KpTau, offline_pc_Ke, offline_eta_gamma);
+
+%% 3) Plot: Filtered Contact Velocity
+contact_velocity_xlim = [];                    % e.g. [10 80], [] keeps auto x-limits-0.2 0.2
+contact_velocity_component_ylims = {[-0.2 0.2], [-0.2 0.2], [-0.2 0.2]}; % {vcX, vcY, vcZ}, e.g. {[-0.1 0.1], [-0.1 0.1], [-0.1 0.1]}
+contact_velocity_norm_ylim = [];               % e.g. [0 0.15], [] keeps auto y-limits
+contact_velocity_scalar_ylim = [];             % e.g. [0 1], [] keeps auto y-limits
+
+if any(isfinite(filtered_contact_velocity(:)))
+    contact_velocity_norm = vecnorm(filtered_contact_velocity, 2, 2);
+
+    figure('Name', 'Filtered Contact Velocity', 'Color', 'w');
+    contact_velocity_layout = tiledlayout(3, 2, ...
+        'TileSpacing', 'compact', 'Padding', 'compact');
+    contact_velocity_labels = {'$v_{c,x}$ [m/s]', '$v_{c,y}$ [m/s]', '$v_{c,z}$ [m/s]'};
+    for i = 1:3
+        ax = nexttile(2 * i - 1);
+        plot(ax, time, filtered_contact_velocity(:, i), 'LineWidth', 1.3);
+        grid(ax, 'on');
+        ylabel(ax, contact_velocity_labels{i}, 'Interpreter', 'latex');
+        xlabel(ax, 'Time [s]');
+        local_apply_limits(ax, contact_velocity_xlim, ...
+            contact_velocity_component_ylims{i});
+    end
+
+    ax_norm = nexttile(2, [3 1]);
+    plot(ax_norm, time, contact_velocity_norm, 'LineWidth', 1.3);
+    grid(ax_norm, 'on');
+    ylabel(ax_norm, '$\|v_c\|$ [m/s]', 'Interpreter', 'latex');
+    xlabel(ax_norm, 'Time [s]');
+    title(ax_norm, '3-axis norm');
+    local_apply_limits(ax_norm, contact_velocity_xlim, contact_velocity_norm_ylim);
+    title(contact_velocity_layout, 'Filtered Contact Velocity');
+
+    contact_velocity_epsilon_v = local_read_yaml_scalar( ...
+        su_params_path, "normEpsV", 0.0016);
+    contact_velocity_norm_sq = contact_velocity_norm.^2;
+    contact_velocity_regularized_scalar = contact_velocity_norm_sq ./ ...
+        (contact_velocity_norm_sq + contact_velocity_epsilon_v);
+
+    figure('Name', 'Regularized Contact Velocity Scalar', 'Color', 'w');
+    ax_scalar = axes;
+    plot(ax_scalar, time, contact_velocity_regularized_scalar, 'LineWidth', 1.3);
+    grid(ax_scalar, 'on');
+    xlabel(ax_scalar, 'Time [s]');
+    ylabel(ax_scalar, ...
+        '$\|v_c\|^2/(\|v_c\|^2 + \epsilon_v)$', 'Interpreter', 'latex');
+    title(ax_scalar, sprintf('$\\epsilon_v = %.4g$', contact_velocity_epsilon_v), ...
+        'Interpreter', 'latex');
+    local_apply_limits(ax_scalar, contact_velocity_xlim, contact_velocity_scalar_ylim);
+end
 
 %% 3.0) Plot: accRaw vs acc with first-order LPF
 imu_acc_xlim = [];                 % e.g. [10 80], [] keeps auto x-limits

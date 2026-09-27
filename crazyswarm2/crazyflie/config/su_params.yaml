@@ -3,8 +3,8 @@ robot_types:
     firmware_params:
       su_wrench:
         mass: 0.045000  # observer mass model [kg]
-        comOffX: -0.000556  # body-frame CoM offset x [m]
-        comOffY: -0.000472  # body-frame CoM offset y [m]
+        comOffX: -0.000210  # body-frame CoM offset x [m]
+        comOffY: -0.000313  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
         rOffX: 0.085
         rOffY: 0.0
@@ -18,13 +18,13 @@ robot_types:
 
         normBeta: 6.0  # [1/s] beta ≈ 2*pi*f_c, decay rate of the normal-axis memory matrix (normal이 굼뜨면 베타 올려)
         normGamma: 4.0  # [1/s] normal-estimate tracking gain (너무 예민하면 감마낮춰)
-        normEpsG: 0.0004  # [m^2/s^2], velocity-projection regularization epsilon_g
-        normEpsF: 0.015  # [N], minimum force evidence norm epsilon_f
+        normEpsV: 0.0016  # [m^2/s^2], velocity-projection regularization epsilon_v
+        normEpsF: 100.015  # [N], minimum force evidence norm epsilon_f
 
-        velModEn: 1  # 0: disabled, 1: manual tangential velocity modulation enabled
+        velModEn: 0  # 0: disabled, 1: manual tangential velocity modulation enabled
         velModABar: 0.013  # [m/s^2], geometry-induced normal acceleration bound
         velModVMin: 0.01  # [m/s], minimum contact speed for curvature update
-        velModVcLPF: 0.2  # [Hz], contact-velocity LPF cutoff for curvature estimation
+        contactVelLPF: 0.4  # [Hz], shared contact-velocity LPF cutoff
         velModNDotLPF: 0.1  # [Hz], normal-derivative LPF cutoff for curvature estimation
         velModKLPF: 0.05  # [Hz], curvature-estimate LPF cutoff
 
