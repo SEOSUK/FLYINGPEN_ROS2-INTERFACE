@@ -37,7 +37,7 @@ class DebugBuffer(Node):
         self.declare_parameter("history_sec", 8.0)
         self.declare_parameter("update_hz", 30.0)
         self.declare_parameter("render_hz", 15.0)
-        self.declare_parameter("topic", "/data_logging_msg_debug")
+        self.declare_parameter("topic", "/data_logging_msg")
 
         self.history_sec = float(self.get_parameter("history_sec").value)
         self.update_hz = float(self.get_parameter("update_hz").value)

@@ -30,16 +30,6 @@ ament_target_dependencies(data_logging
   std_msgs
   geometry_msgs
   crazyflie_interfaces
-  tf2
-  tf2_ros
-)
-
-add_executable(data_logging_debug src/data_logging_debug.cpp)
-ament_target_dependencies(data_logging_debug
-  rclcpp
-  std_msgs
-  geometry_msgs
-  crazyflie_interfaces
   motion_capture_tracking_interfaces
   tf2
   tf2_ros
@@ -82,7 +72,6 @@ target_link_libraries(command_publisher ncurses)
 # 설치 (ros2 run 할 수 있게)
 install(TARGETS
   data_logging
-  data_logging_debug
   data_player
   rviz_visual
   command_publisher

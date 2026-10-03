@@ -3,7 +3,7 @@ robots:
   cf2:
     enabled: true
     uri: radio://0/100/1M/E7E7E7E7B7 # first
-#    uri: radio://0/80/2M/E7E7E7E7B5 # second
+    # uri: radio://0/80/2M/E7E7E7E7B5 # second
 #    uri: udp://0.0.0.0:19850 # simul
     initial_position: [0.0, 0.0, 0.0]
     type: cf21  # see robot_types
@@ -17,48 +17,49 @@ robot_types:
       # only if enabled; see motion_capture.yaml
       marker: default_single_marker
       dynamics: default
-    battery:
-      voltage_warning: 3.8  # V
-      voltage_critical: 3.7 # V
     firmware_logging:
       enabled: true
       default_topics:
         pose:
-          frequency: 20
+          frequency: 30
         status:
           frequency: 1
       custom_topics:
-        # For PID Gain Tuning
-        stateEstimate_velocity:  # global
+        # Velocity/noise diagnosis. Each block stays below the Crazyflie 26-byte payload limit.
+        cf_kalman_timing:
           frequency: 10
-          vars: [stateEstimate.vx, stateEstimate.vy, stateEstimate.vz]
-        stateEstimate_acc:  # global
+          vars: [kalman.rtPred, kalman.rtUpdate, kalman.rtFinal, kalman.resetCnt, kalman.supResetCnt, kalman.stateUpdCnt]
+        cf_loop_timing:
           frequency: 10
-          vars: [stateEstimate.ax, stateEstimate.ay, stateEstimate.az]
-#        state_body_vel:  # yaw-aligned body
-#          frequency: 10
-#          vars: [posCtl.bodyVX, posCtl.bodyVY]   # 또는 내부 state_body_vx/y 로그
-        gyro_feedback:
+          vars: [stabilizer.loopDtUs, stabilizer.loopDtUsMax, stabilizer.loopOvrCnt]
+        cf_extpos_timing:
+          frequency: 20
+          vars: [locSrv.rxDtMs, locSrv.rxCount, locSrv.gapCount, locSrv.gapLastMs, locSrv.rxDtMaxMs]
+        cf_extpos_xyz:
+          frequency: 30
+          vars: [locSrv.x, locSrv.y, locSrv.z]
+        cf_state_posvel:
+          frequency: 30
+          vars: [stateEstimate.x, stateEstimate.y, stateEstimate.z, stateEstimate.vx, stateEstimate.vy, stateEstimate.vz]
+        cf_pos_velocity:
+          frequency: 30
+          vars: [suVelFromPos.rawVx, suVelFromPos.rawVy, suVelFromPos.rawVz, suVelFromPos.vx, suVelFromPos.vy, suVelFromPos.vz]
+        cf_pos_velocity_events:
+          frequency: 10
+          vars: [suVelFromPos.dPosX, suVelFromPos.dPosY, suVelFromPos.dPosZ, suVelFromPos.rejectCnt, suVelFromPos.resetCnt]
+        cf_contact_velocity:
+          frequency: 30
+          vars: [suVelMod.vcRawX, suVelMod.vcRawY, suVelMod.vcRawZ, suVelMod.vcX, suVelMod.vcY, suVelMod.vcZ]
+        cf_contact_offset_velocity:
+          frequency: 30
+          vars: [suWrenchObs.rotVelX, suWrenchObs.rotVelY, suWrenchObs.rotVelZ]
+        cf_velocity_command:
+          frequency: 10
+          vars: [ctrltarget.vx, ctrltarget.vy, ctrltarget.vz]
+        cf_gyro_body:
           frequency: 10
           vars: [gyro.x, gyro.y, gyro.z]
-        vel_des:  # yaw-aligned body
-          frequency: 11
-          vars: [posCtl.targetVX, posCtl.targetVY, posCtl.targetVZ]
-        att_des:
-          frequency: 10
-          vars: [controller.roll, controller.pitch, controller.yaw]
-        rate_des:
-          frequency: 10
-          vars: [controller.rollRate, controller.pitchRate, controller.yawRate]
-        # ---------------------------
-        # Kalman attitude / attitude-error debug (SEUK)
-        # ---------------------------
-#        kalman_att_qComp:
-#          frequency: 10
-#          vars: [kalman.q0, kalman.q1, kalman.q2, kalman.q3]
-#        kalman_att_err:
-#          frequency: 10
-#          vars: [kalman.stateD0, kalman.stateD1, kalman.stateD2]
+
 
     firmware_params:
       commander:
@@ -69,58 +70,111 @@ robot_types:
       locSrv:
         extPosStdDev: 1e-3
         extQuatStdDev: 0.5e-1
-      # ================================================
-      #     Custom modules
-      # ================================================
+      su_position:
+        velAccXY: 5.0  # [m/s^2] 5-sample velocity regression acceleration gate
+        velAccZ: 8.0   # [m/s^2]
+      imu_sensors:
+        accTrimRoll: -0.47
+        accTrimPitch: 0.17
+
 
       kalman:
         resetEstimation: 0
+        # 0: Kalman attitude 사용 (기존과 동일)
+        # 1: complementary attitude로 stateEstimate.* (roll/pitch/yaw, q, vel, acc) 출력
+        # 2: complementary attitude로 stateEstimate.* 근데이제 yaw는 kalman
         useCompAttOut: 2
-        slaveAttToComp: 0
-        compKp: 1.5
-        compKi: 0.02
 
+        # 0: Kalman 내부 q/R는 원래대로 두고, 출력만 complementary 사용
+        # 1: Kalman 내부 q/R도 complementary에 동기화 (내부 dynamics도 comp 기반)
+        slaveAttToComp: 0
+
+        # complementary Mahony filter roll/pitch correction gain
+        compKp: 1.2
+        compKi: 0.0
+
+
+
+##### controller: 1 PID #####
+      # PID cascade:
+      # posCtlPid -> desired velocity
+      # velCtlPid -> desired roll/pitch + thrust
+      # pid_attitude -> desired body rates
+      # pid_rate -> final roll/pitch/yaw actuator command
+      #
+      # LPF logic:
+      # - Crazyflie PID D-term uses derivative of measured signal, not error.
+      # - When *FiltEn = 1, a 2-pole low-pass filter attenuates high-frequency noise before D contributes.
+      # - Position/velocity filters default ON. Attitude/rate filters default OFF on cf21bl.
+      # - Feedforward term is added as outFF = kff * desired.
       posCtlPid:
         xKp: 1.3 # Default: 2.0
-        yKp: 1.5 # Default: 2.0
-        zKp: 2.0 # Default: 2.0
+        yKp: 1.3 # Default: 2.0
+        zKp: 2.2 # Default: 2.0
         xKi: 0.0 # Default: 0.0
         yKi: 0.0 # Default: 0.0
         zKi: 0.0 # Default: 0.5
         xKd: 0.15 # Default: 0.0
         yKd: 0.15 # Default: 0.0
-        zKd: 0.15 # Default: 0.0
+        zKd: 0.25 # Default: 0.0
+        xKff: 0.0 # Default: 0.0
+        yKff: 0.0 # Default: 0.0
+        zKff: 0.0 # Default: 0.0
+        posFiltEn: 1 # Default: 1, XY position PID D-term LPF enable
+        posFiltCut: 20.0 # Default: 20.0 Hz, XY position PID D-term LPF cutoff
+        posZFiltEn: 1 # Default: 1, Z position PID D-term LPF enable
+        posZFiltCut: 20.0 # Default: 20.0 Hz, Z position PID D-term LPF cutoff
       velCtlPid:
-        vxKp: 14.0 # Default: 25.0
-        vyKp: 17.0 # Default: 25.0
-        vzKp: 14.0 # Default: 25.0
-        vxKi: 1. # Default: 1.0
-        vyKi: 1.0 # Default: 1.0
-        vzKi: 10.0 # Default: 15.0
+        vxKp: 15.0 # Default: 25.0
+        vyKp: 15.0 # Default: 25.0
+        vzKp: 20.0 # Default: 25.0
+        vxKi: 0. # Default: 1.0
+        vyKi: 0. # Default: 1.0
+        vzKi: 7.0 # Default: 15.0
         vxKd: 1.2 # Default: 0.0
         vyKd: 1.2 # Default: 0.0
-        vzKd: 1.2 # Default: 0.0
+        vzKd: 2.0 # Default: 0.0
+        vxKFF: 0.0 # Default: 0.0
+        vyKFF: 0.0 # Default: 0.0
+        vzKFF: 0.0 # Default: 0.0
+        velFiltEn: 1 # Default: 1, XY velocity PID D-term LPF enable
+        velFiltCut: 20.0 # Default: 20.0 Hz, XY velocity PID D-term LPF cutoff
+        velZFiltEn: 1 # Default: 1, Z velocity PID D-term LPF enable
+        velZFiltCut: 20.0 # Default: 20.0 Hz, Z velocity PID D-term LPF cutoff
+        frameMode: 1 # 0: default yaw-aligned body frame, 1: world-frame position/velocity PID
 
       pid_attitude:
         roll_kp: 6.5 # Default: 6.0
-        pitch_kp: 7.6 # Default: 6.0
-        yaw_kp: 7.5 # Default: 6.0
+        pitch_kp: 6.5 # Default: 6.0
+        yaw_kp: 12.5 # Default: 6.0
         roll_ki: 2.0 # Default: 3.0
         pitch_ki: 2.0 # Default: 3.0
         yaw_ki: 0.7 # Default: 1.0
         roll_kd: 0.3 # Default: 0.0
-        pitch_kd: 0.5 # Default: 0.0
-        yaw_kd: 0.7 # Default: 0.35
+        pitch_kd: 0.3 # Default: 0.0
+        yaw_kd: 1.0 # Default: 0.35
+        roll_kff: 0.0 # Default: 0.0
+        pitch_kff: 0.0 # Default: 0.0
+        yaw_kff: 0.0 # Default: 0.0
+        attFiltEn: 1 # Default: 0, attitude PID D-term LPF enable
+        attFiltCut: 15.0 # Default: 15.0 Hz, attitude PID D-term LPF cutoff
       pid_rate:
         roll_kp: 220.0 # Default: 200.0
-        pitch_kp: 230.0 # Default: 200.0
-        yaw_kp: 250.0 # Default: 120.0
+        pitch_kp: 220.0 # Default: 200.0
+        yaw_kp: 300.0 # Default: 120.0
         roll_ki: 300.0 # Default: 400.0
         pitch_ki: 300.0 # Default: 400.0
-        yaw_ki: 10.0 # Default: 16.7
+        yaw_ki: 15.0 # Default: 16.7
         roll_kd: 2.5 # Default: 2.5
-        pitch_kd: 3.5 # Default: 2.5
-        yaw_kd: 5.5 # Default: 0.0
+        pitch_kd: 2.5 # Default: 2.5
+        yaw_kd: 3.5 # Default: 0.0
+        roll_kff: 0.0 # Default: 0.0
+        pitch_kff: 0.0 # Default: 0.0
+        yaw_kff: 0.0 # Default: 0.0
+        rateFiltEn: 1 # Default: 0, rate PID D-term LPF enable
+        omxFiltCut: 30.0 # Default: 30.0 Hz, roll-rate PID D-term LPF cutoff
+        omyFiltCut: 30.0 # Default: 30.0 Hz, pitch-rate PID D-term LPF cutoff
+        omzFiltCut: 30.0 # Default: 30.0 Hz, yaw-rate PID D-term LPF cutoff
 
     broadcasts:
       num_repeats: 1 # number of times broadcast commands are repeated

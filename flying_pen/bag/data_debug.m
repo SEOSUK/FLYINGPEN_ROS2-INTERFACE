@@ -1,7 +1,7 @@
 %% data_debug.m
 % Debug-only reader and plotting dashboard for suWrenchObs SI logging.
 %
-% Matches: data_logging_debug.cpp
+% Matches: data_logging.cpp
 % Columns:
 %   pose_x,y,z, pose_roll,pitch,yaw,                  [m], [rad], world/body
 %   cmd_x,cmd_y,cmd_z,cmd_yaw,                        [m], [rad], world
@@ -39,7 +39,7 @@ clear; close all; clc;
 set(groot, 'defaultFigureRenderer', 'painters');
 
 %% 0) User config
-sample_hz = 50.0;      % data_logging_debug loop_hz default
+sample_hz = 50.0;      % data_logging loop_hz default
 mass_kg = 0.0425;      % Crazyflie 2.1 Brushless mass
 gravity_ms2 = 9.81;
 defaultDir = fullfile(getenv("HOME"), "hitl_ws", "src", "flying_pen", "bag", "logging");

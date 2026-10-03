@@ -58,7 +58,7 @@ public:
   : Node("rviz_visual"),
     tf_broadcaster_(std::make_shared<tf2_ros::TransformBroadcaster>(this))
   {
-    data_topic_ = this->declare_parameter<std::string>("topic", "/data_logging_msg_debug");
+    data_topic_ = this->declare_parameter<std::string>("topic", "/data_logging_msg");
     history_sample_period_ = this->declare_parameter<double>("history_sample_period", 0.2);
     history_publish_period_ = this->declare_parameter<double>("history_publish_period", 0.10);
     history_duration_ = this->declare_parameter<double>("history_duration", 30.0);

@@ -38,7 +38,7 @@ class SuInterface(Node):
         )
         self.debug_subscription = self.create_subscription(
             Float64MultiArray,
-            '/data_logging_msg_debug',
+            '/data_logging_msg',
             self.debug_callback,
             50
         )
@@ -124,7 +124,7 @@ class SuInterface(Node):
 
         if len(samples) < HOVER_MIN_SAMPLES:
             self.get_logger().warning(
-                'HOVER CALIBRATION skipped: only %d samples in the last %.1f s on /data_logging_msg_debug',
+                'HOVER CALIBRATION skipped: only %d samples in the last %.1f s on /data_logging_msg',
                 len(samples),
                 HOVER_CALIBRATION_WINDOW_SEC,
             )

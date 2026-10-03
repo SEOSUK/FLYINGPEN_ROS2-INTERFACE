@@ -44,7 +44,7 @@ def generate_launch_description():
         "start_offset_sec": float(csv_cfg.get("start_offset_sec", 0.0)),
         "playback_rate": float(csv_cfg.get("playback_rate", 1.0)),
         "sample_hz": float(csv_cfg.get("sample_hz", 50.0)),
-        "publish_topic": csv_cfg.get("publish_topic", "/data_logging_msg_debug"),
+        "publish_topic": csv_cfg.get("publish_topic", "/data_logging_msg"),
         "status_topic": "/csv_player/status",
     }
 

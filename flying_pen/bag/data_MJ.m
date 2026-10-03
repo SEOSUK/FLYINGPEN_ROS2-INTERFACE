@@ -3,14 +3,14 @@
 % per-propeller thrust, MOB pure force, and battery voltage.
 %
 % Supported inputs:
-% - data_logging_debug CSV: *_debug.csv
+% - data_logging CSV: *_velocity.csv
 % - data_logging CSV: *.csv, when matching columns are available
 %
 clear; close all; clc;
 set(groot, 'defaultFigureRenderer', 'painters');
 
 %% 0) User config
-sample_hz = 20.0;  % Used only when the CSV has no t_sec column. Match crazyflies_debug.yaml logging frequency.
+sample_hz = 20.0;  % Used only when the CSV has no t_sec column. Match crazyflies.yaml logging frequency.
 imu_lpf_alpha = 0.01;  % First-order LPF: y(k) = y(k-1) + alpha * (x(k) - y(k-1)).
 axis_names = {'x', 'y', 'z'};
 att_names = {'roll', 'pitch', 'yaw'};

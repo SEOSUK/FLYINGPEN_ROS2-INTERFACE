@@ -39,6 +39,8 @@ def launch_setup(context, *args, **kwargs):
         su_wrench_cfg.get("rOffZ", 0.04),
     ]
     runtime_mode = runtime_cfg.get("runtime", {}).get("ros__parameters", {}).get("mode", "default")
+    logger_cfg = runtime_cfg.get("data_logging", {}).get("ros__parameters", {})
+    logger_topic = logger_cfg.get("publish_topic", "/data_logging_msg")
     rviz_config = os.path.join(
         log_player_share,
         "config",
@@ -61,17 +63,6 @@ def launch_setup(context, *args, **kwargs):
         )
     )
 
-    if runtime_mode == "debug":
-        actions.append(
-            Node(
-                package="flying_pen",
-                executable="data_logging_debug",
-                name="data_logging_debug",
-                output="screen",
-                parameters=[runtime_params],
-            )
-        )
-
     actions.append(
         ExecuteProcess(
             cmd=[
@@ -80,8 +71,7 @@ def launch_setup(context, *args, **kwargs):
                 "record",
                 "-o",
                 bag_dir,
-                "/data_logging_msg",
-                *(['/data_logging_msg_debug'] if runtime_mode == "debug" else []),
+                logger_topic,
             ],
             output="screen",
         )

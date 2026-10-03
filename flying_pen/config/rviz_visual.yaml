@@ -1,6 +1,6 @@
 rviz_visual:
   ros__parameters:
-    topic: "/data_logging_msg_debug"
+    topic: "/data_logging_msg"
     ee_cmd_topic: "cf2/cf_su_ee_cmd"
     history_sample_period: 1.0
     history_duration: 30.0

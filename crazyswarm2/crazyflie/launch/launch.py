@@ -1,6 +1,6 @@
 import os
 import yaml
-from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch_ros.actions import Node
@@ -11,21 +11,7 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 
 def resolve_default_crazyflies_yaml_path():
     crazyflie_share = get_package_share_directory('crazyflie')
-    default_path = os.path.join(crazyflie_share, 'config', 'crazyflies.yaml')
-    debug_path = os.path.join(crazyflie_share, 'config', 'crazyflies_debug.yaml')
-
-    try:
-        flying_pen_share = get_package_share_directory('flying_pen')
-        runtime_params = os.path.join(flying_pen_share, 'config', 'parameters.yaml')
-        with open(runtime_params, 'r') as file:
-            runtime_cfg = yaml.safe_load(file) or {}
-        runtime_mode = runtime_cfg.get('runtime', {}).get('ros__parameters', {}).get('mode', 'default')
-        if runtime_mode == 'debug' and os.path.exists(debug_path):
-            return debug_path
-    except (PackageNotFoundError, FileNotFoundError, yaml.YAMLError):
-        pass
-
-    return default_path
+    return os.path.join(crazyflie_share, 'config', 'crazyflies.yaml')
 
 
 def deep_merge_dict(dst, src):
