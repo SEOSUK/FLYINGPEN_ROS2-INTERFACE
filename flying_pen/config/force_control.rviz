@@ -116,10 +116,36 @@ Visualization Manager:
         Value: /cmd_position_marker
       Value: false
     - Class: rviz_default_plugins/Marker
-      Enabled: true
-      Name: EE Force
+      Enabled: false
+      Name: MOB Raw
       Namespaces:
-        contact_force: true
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mob_force_raw_marker
+      Value: false
+    - Class: rviz_default_plugins/Marker
+      Enabled: false
+      Name: MOB Bar
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mob_force_bar_marker
+      Value: false
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: MOB Hat C
+      Namespaces:
+        mob_hat_c: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -129,10 +155,10 @@ Visualization Manager:
         Value: /contact_force_marker
       Value: true
     - Class: rviz_default_plugins/Marker
-      Enabled: true
+      Enabled: false
       Name: Estimated Normal
       Namespaces:
-        normal_estimation: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -140,12 +166,14 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /normal_est_marker
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/Marker
       Enabled: true
       Name: tilted_wall
       Namespaces:
+        wall: true
         wall_center: true
+        wall_normal: true
         wall_outline: true
       Topic:
         Depth: 5
@@ -189,25 +217,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.8926913738250732
+      Distance: 3.37792706489563
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.17622117698192596
-        Y: 0.02648964338004589
-        Z: 0.6024091839790344
+        X: 0.32037442922592163
+        Y: 0.13852116465568542
+        Z: 0.536516010761261
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.45500004291534424
+      Pitch: 0.6500000953674316
       Target Frame: world
       Value: Orbit (rviz_default_plugins)
-      Yaw: 2.0049989223480225
+      Yaw: 1.8600014448165894
     Saved: ~
 Window Geometry:
   Displays:

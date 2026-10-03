@@ -25,6 +25,11 @@ robot_types:
         status:
           frequency: 1
       custom_topics:
+        # 이거 지우면 안됨. f calibration 때 필요한 값임.
+        cf_calibration:
+          frequency: 5
+          vars: [suCalib.state, suCalib.runId, suCalib.accRoll, suCalib.accPitch, suCalib.comX, suCalib.comY]
+
         # Force-control telemetry. Every block fits in one 26-byte CRTP log packet.
         cf_ee_tracking:
           frequency: 30
@@ -52,9 +57,6 @@ robot_types:
         cf_imu_trim:
           frequency: 30
           vars: [accRaw.x, accRaw.y, accRaw.z, acc.x, acc.y, acc.z]
-        cf_calibration:
-          frequency: 5
-          vars: [suCalib.state, suCalib.runId, suCalib.accRoll, suCalib.accPitch, suCalib.comX, suCalib.comY]
 
 
     firmware_params:
@@ -101,15 +103,15 @@ robot_types:
       # - Position/velocity filters default ON. Attitude/rate filters default OFF on cf21bl.
       # - Feedforward term is added as outFF = kff * desired.
       posCtlPid:
-        xKp: 1.3 # Default: 2.0
-        yKp: 1.3 # Default: 2.0
-        zKp: 2.2 # Default: 2.0
+        xKp: 1.0 # Default: 2.0
+        yKp: 1.0 # Default: 2.0
+        zKp: 2.0 # Default: 2.0
         xKi: 0.0 # Default: 0.0
         yKi: 0.0 # Default: 0.0
         zKi: 0.0 # Default: 0.5
-        xKd: 0.15 # Default: 0.0
-        yKd: 0.15 # Default: 0.0
-        zKd: 0.25 # Default: 0.0
+        xKd: 0.10 # Default: 0.0
+        yKd: 0.10 # Default: 0.0
+        zKd: 0.2 # Default: 0.0
         xKff: 0.0 # Default: 0.0
         yKff: 0.0 # Default: 0.0
         zKff: 0.0 # Default: 0.0
@@ -118,15 +120,15 @@ robot_types:
         posZFiltEn: 1 # Default: 1, Z position PID D-term LPF enable
         posZFiltCut: 20.0 # Default: 20.0 Hz, Z position PID D-term LPF cutoff
       velCtlPid:
-        vxKp: 15.0 # Default: 25.0
-        vyKp: 15.0 # Default: 25.0
-        vzKp: 20.0 # Default: 25.0
+        vxKp: 20.0 # Default: 25.0
+        vyKp: 20.0 # Default: 25.0
+        vzKp: 21.0 # Default: 25.0
         vxKi: 0. # Default: 1.0
         vyKi: 0. # Default: 1.0
         vzKi: 7.0 # Default: 15.0
-        vxKd: 1.2 # Default: 0.0
-        vyKd: 1.2 # Default: 0.0
-        vzKd: 2.0 # Default: 0.0
+        vxKd: 3.0 # Default: 0.0
+        vyKd: 3.0 # Default: 0.0
+        vzKd: 4.0 # Default: 0.0
         vxKFF: 0.0 # Default: 0.0
         vyKFF: 0.0 # Default: 0.0
         vzKFF: 0.0 # Default: 0.0

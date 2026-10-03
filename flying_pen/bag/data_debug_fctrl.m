@@ -51,11 +51,19 @@ end
 xlabel('t [s]'); sgtitle('Firmware EE position tracking');
 
 %% Figure 2 - Force command and MOB force X
-% forceCmd is a signed scalar along the estimated contact normal, while mobForceX
-% is a world-X raw lumped force. They are not the same frame, so do not overlay.
 figure('Name','Force command and MOB force X');
-subplot(2,1,1); plot(t,safeColumn(T,"forceCmd"),'LineWidth',2); grid on; ylabel('force cmd [N]'); title('Signed contact-normal command');
-subplot(2,1,2); plot(t,safeColumn(T,"mobForceX"),'LineWidth',2); grid on; ylabel('MOB F_x [N]'); xlabel('t [s]'); title('Raw world-X lumped force');
+subplot(2,1,1);
+plot(t,safeColumn(T,"forceCmd"),'LineWidth',2); hold on;
+plot(t,-safeColumn(T,"mobForceX"),'LineWidth',2); grid on;
+ylabel('force [N]');
+legend('force command','-MOB F_x');
+title('Force command vs. sign-inverted MOB force X');
+subplot(2,1,2);
+plot(t,safeColumn(T,"fwCmdX"),'LineWidth',2); hold on;
+plot(t,safeColumn(T,"fwEePosX"),'LineWidth',2); grid on;
+ylabel('EE x [m]'); xlabel('t [s]');
+legend('command','measured');
+title('End-effector X position command vs. measurement');
 
 %% Figure 3 - Momentum Observer force and torque
 figure('Name','Momentum Observer force and torque');

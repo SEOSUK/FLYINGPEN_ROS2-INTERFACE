@@ -12,10 +12,12 @@ from crazyflie_py import Crazyswarm
 
 
 CALIB_IDLE = 0
-CALIB_IMU_TRIM = 1
-CALIB_COM_COLLECT = 2
-CALIB_DONE = 3
-CALIB_ERROR = 4
+# State 1 was the removed WAIT_HOVER state. The remaining firmware wire values
+# stay unchanged for compatibility with already-flashed firmware and old logs.
+CALIB_IMU_TRIM = 2
+CALIB_COM_COLLECT = 3
+CALIB_DONE = 4
+CALIB_ERROR = 5
 CALIBRATION_TIMEOUT_SEC = 70.0
 DISARM_RETRY_PERIOD_SEC = 0.1
 DISARM_RETRY_COUNT = 20

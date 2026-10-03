@@ -98,6 +98,8 @@ public:
 
     raw_cmd_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/cmd_position_marker", 10);
     fw_cmd_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/fw_cmd_position_marker", 10);
+    raw_mob_force_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/mob_force_raw_marker", 10);
+    force_bar_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/mob_force_bar_marker", 10);
     contact_force_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/contact_force_marker", 10);
     normal_est_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/normal_est_marker", 10);
     ee_velocity_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/ee_velocity_marker", 10);
@@ -184,13 +186,19 @@ private:
   {
     if (msg->data.size() == kForceControlDataSize) {
       const Eigen::Vector3d fw_cmd(msg->data[8], msg->data[9], msg->data[10]);
+      const Eigen::Vector3d raw_mob_force(msg->data[15], msg->data[16], msg->data[17]);
+      const Eigen::Vector3d force_bar(msg->data[21], msg->data[22], msg->data[23]);
       const Eigen::Vector3d contact_force(msg->data[24], msg->data[25], msg->data[26]);
       const Eigen::Vector3d normal_est(msg->data[27], msg->data[28], msg->data[29]);
       const Eigen::Vector3d ee_velocity(msg->data[30], msg->data[31], msg->data[32]);
       if (isFiniteVector(fw_cmd)) { fw_cmd_pos_ = fw_cmd; fw_cmd_valid_ = true; }
       else { fw_cmd_valid_ = false; publishDelete(fw_cmd_pub_, "fw_cmd_position", 0); }
+      if (isFiniteVector(raw_mob_force)) { raw_mob_force_ = raw_mob_force; raw_mob_force_valid_ = true; }
+      else { raw_mob_force_valid_ = false; publishDelete(raw_mob_force_pub_, "mob_raw", 0); }
+      if (isFiniteVector(force_bar)) { force_bar_ = force_bar; force_bar_valid_ = true; }
+      else { force_bar_valid_ = false; publishDelete(force_bar_pub_, "mob_bar", 0); }
       if (isFiniteVector(contact_force)) { contact_force_ = contact_force; contact_force_valid_ = true; }
-      else { contact_force_valid_ = false; publishDelete(contact_force_pub_, "contact_force", 0); }
+      else { contact_force_valid_ = false; publishDelete(contact_force_pub_, "mob_hat_c", 0); }
       if (isFiniteVector(normal_est) && normal_est.norm() > 1.0e-9) { normal_est_ = normal_est; normal_est_valid_ = true; }
       else { normal_est_valid_ = false; publishDelete(normal_est_pub_, "normal_estimation", 0); }
       if (isFiniteVector(ee_velocity)) { ee_velocity_ = ee_velocity; ee_velocity_valid_ = true; }
@@ -265,6 +273,8 @@ private:
       contact_force_[1] = msg->data[kContactForceIndex + 1];
       contact_force_[2] = msg->data[kContactForceIndex + 2];
     }
+    raw_mob_force_valid_ = isFiniteVector(raw_mob_force_);
+    force_bar_valid_ = isFiniteVector(force_bar_);
     contact_force_valid_ = isFiniteVector(contact_force_);
 
     normal_est_[0] = msg->data[76];
@@ -392,7 +402,9 @@ private:
 
     if (cmd_valid_) publishSphere(raw_cmd_pub_, stamp, "world", "cmd_position", 0, p_cmd, 0.05, 0.0f, 0.45f, 0.90f, 0.85f);
     if (fw_cmd_valid_) publishSphere(fw_cmd_pub_, stamp, "world", "fw_cmd_position", 0, p_fw_cmd, 0.06, 0.90f, 0.35f, 0.10f, 0.90f);
-    if (contact_force_valid_) publishArrow(contact_force_pub_, stamp, "world", "contact_force", 0, p_ee, contact_force_, kForceArrowScale, 0.02, 0.04, 0.06, 0.7f, 0.0f, 0.8f);
+    if (raw_mob_force_valid_) publishArrow(raw_mob_force_pub_, stamp, "world", "mob_raw", 0, p_ee, raw_mob_force_, kForceArrowScale, 0.02, 0.04, 0.06, 1.0f, 0.0f, 0.0f);
+    if (force_bar_valid_) publishArrow(force_bar_pub_, stamp, "world", "mob_bar", 0, p_ee, force_bar_, kForceArrowScale, 0.02, 0.04, 0.06, 0.0f, 1.0f, 0.0f);
+    if (contact_force_valid_) publishArrow(contact_force_pub_, stamp, "world", "mob_hat_c", 0, p_ee, contact_force_, kForceArrowScale, 0.02, 0.04, 0.06, 0.0f, 0.0f, 1.0f);
     if (normal_est_valid_) publishArrow(normal_est_pub_, stamp, "world", "normal_estimation", 0, p_ee, normal_est_, 0.35, 0.02, 0.04, 0.06, 0.1f, 0.8f, 0.2f);
     if (ee_velocity_valid_) publishArrow(ee_velocity_pub_, stamp, "world", "ee_velocity", 0, p_ee, ee_velocity_, 2.0, 0.015, 0.03, 0.05, 0.0f, 0.9f, 0.9f);
     pushSmoothTrajectorySample(ee_pos, stamp);
@@ -1097,6 +1109,8 @@ private:
 
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr raw_cmd_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr fw_cmd_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr raw_mob_force_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr force_bar_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr contact_force_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr normal_est_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr ee_velocity_pub_;
@@ -1144,6 +1158,8 @@ private:
   bool wall_pose_valid_{false};
   bool cmd_valid_{false};
   bool fw_cmd_valid_{false};
+  bool raw_mob_force_valid_{false};
+  bool force_bar_valid_{false};
   bool contact_force_valid_{false};
   bool normal_est_valid_{false};
   bool ee_velocity_valid_{false};
