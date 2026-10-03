@@ -206,6 +206,19 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
+      Name: Contact Velocity LPF
+      Namespaces:
+        vc_lpf: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /vc_lpf_marker
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
       Name: Acceleration
       Namespaces:
         acceleration: true

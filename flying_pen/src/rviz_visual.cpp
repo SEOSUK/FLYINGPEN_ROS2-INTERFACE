@@ -2,6 +2,7 @@
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "geometry_msgs/msg/pose.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
@@ -32,6 +33,8 @@ constexpr std::size_t kForceBarIndex = 116;
 constexpr std::size_t kRawMobDataSize = kRawMobForceIndex + 3;
 constexpr std::size_t kContactForceDataSize = kContactForceIndex + 3;
 constexpr std::size_t kForceBarDataSize = kForceBarIndex + 3;
+constexpr std::size_t kVelocityDebugDataSize = 58;
+constexpr std::size_t kVcLpfIndex = 46;
 constexpr double kForceArrowScale = 10.0;
 
 bool isFiniteVector(const Eigen::Vector3d & v)
@@ -62,6 +65,8 @@ public:
     history_frame_axis_scale_ = this->declare_parameter<double>("history_frame_axis_scale", 0.3);
     wall_pose_topic_ = this->declare_parameter<std::string>("wall_pose_topic", "/poses");
     wall_pose_name_ = this->declare_parameter<std::string>("wall_pose_name", "tilted_wall");
+    robot_pose_name_ = this->declare_parameter<std::string>("robot_pose_name", "cf2");
+    robot_pose_topic_ = this->declare_parameter<std::string>("robot_pose_topic", "/cf2/pose");
     wall_marker_frame_ = this->declare_parameter<std::string>("wall_marker_frame", "tilted_wall");
     wall_scale_x_ = this->declare_parameter<double>("wall_scale_x", 0.01);
     wall_scale_y_ = this->declare_parameter<double>("wall_scale_y", 1.0);
@@ -76,6 +81,9 @@ public:
       data_topic_, qos, std::bind(&RvizVisual::dataCallback, this, std::placeholders::_1));
     wall_pose_sub_ = this->create_subscription<motion_capture_tracking_interfaces::msg::NamedPoseArray>(
       wall_pose_topic_, qos, std::bind(&RvizVisual::wallPoseCallback, this, std::placeholders::_1));
+    robot_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+      robot_pose_topic_, 10,
+      std::bind(&RvizVisual::robotPoseCallback, this, std::placeholders::_1));
 
     clear_history_srv_ = this->create_service<std_srvs::srv::Trigger>(
       "~/clear_history",
@@ -95,7 +103,7 @@ public:
     normal_est_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/normal_est_marker", 10);
     acc_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/acc_marker", 10);
     vel_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/vel_marker", 10);
-    ee_vel_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/ee_vel_marker", 10);
+    vc_lpf_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/vc_lpf_marker", 10);
     wall_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/wall_marker", 10);
     ee_history_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/ee_trajectory_history", 10);
     contact_history_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -112,41 +120,79 @@ public:
     normal_est_.setZero();
     world_vel_.setZero();
     world_acc_.setZero();
-    ee_vel_used_.setZero();
+    vc_lpf_.setZero();
+    // Keep the URDF root connected to RViz immediately. The zero pose is
+    // replaced as soon as the first matching /poses sample arrives.
+    pose_valid_ = true;
 
     RCLCPP_INFO(get_logger(), "rviz_visual started. subscribing %s", data_topic_.c_str());
   }
 
 private:
+  bool updateRobotPose(const geometry_msgs::msg::Pose & pose)
+  {
+    if (!isFinitePose(pose)) {
+      return false;
+    }
+
+    const auto & p = pose.position;
+    const auto & q = pose.orientation;
+    const double quaternion_norm =
+      std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (quaternion_norm < 1.0e-9) {
+      return false;
+    }
+
+    pos_ = Eigen::Vector3d(p.x, p.y, p.z);
+    tf2::Quaternion robot_q(q.x, q.y, q.z, q.w);
+    robot_q.normalize();
+    tf2::Matrix3x3(robot_q).getRPY(rpy_meas_[0], rpy_meas_[1], rpy_meas_[2]);
+    pose_valid_ = true;
+    return true;
+  }
+
+  void robotPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+  {
+    firmware_pose_received_ = updateRobotPose(msg->pose) || firmware_pose_received_;
+  }
+
   void wallPoseCallback(
     const motion_capture_tracking_interfaces::msg::NamedPoseArray::SharedPtr msg)
   {
     for (const auto & named_pose : msg->poses) {
-      if (named_pose.name != wall_pose_name_) {
-        continue;
-      }
-
       const auto & p = named_pose.pose.position;
       const auto & q = named_pose.pose.orientation;
       if (
         !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
         !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) || !std::isfinite(q.w))
       {
-        return;
+        continue;
       }
 
-      wall_pose_ = named_pose.pose;
-      wall_pose_valid_ = true;
-      return;
+      if (named_pose.name == wall_pose_name_) {
+        wall_pose_ = named_pose.pose;
+        wall_pose_valid_ = true;
+      }
+
+      if (named_pose.name == robot_pose_name_ && !firmware_pose_received_) {
+        updateRobotPose(named_pose.pose);
+      }
     }
   }
 
   void dataCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
+    if (msg->data.size() >= kVelocityDebugDataSize && msg->data.size() < 82) {
+      vc_lpf_[0] = msg->data[kVcLpfIndex];
+      vc_lpf_[1] = msg->data[kVcLpfIndex + 1];
+      vc_lpf_[2] = msg->data[kVcLpfIndex + 2];
+      return;
+    }
+
     if (msg->data.size() < 82) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "msg size too small (%zu), expected >= 82", msg->data.size());
+        "msg size too small (%zu), expected >= %zu", msg->data.size(), kVelocityDebugDataSize);
       return;
     }
 
@@ -210,9 +256,9 @@ private:
     normal_est_[1] = msg->data[77];
     normal_est_[2] = msg->data[78];
 
-    ee_vel_used_[0] = msg->data[79];
-    ee_vel_used_[1] = msg->data[80];
-    ee_vel_used_[2] = msg->data[81];
+    vc_lpf_[0] = msg->data[79];
+    vc_lpf_[1] = msg->data[80];
+    vc_lpf_[2] = msg->data[81];
 
     if (msg->data.size() >= 96) {
       geometry_msgs::msg::Pose wall_pose_from_log;
@@ -335,7 +381,7 @@ private:
     publishArrow(normal_est_pub_, stamp, "world", "normal_estimation", 0, p_ee, normal_est_, 0.35, 0.02, 0.04, 0.06, 0.1f, 0.8f, 0.2f);
     publishArrow(acc_pub_, stamp, "world", "acceleration", 0, p0, world_acc_, 0.5, 0.015, 0.03, 0.05, 0.0f, 0.0f, 1.0f);
     publishArrow(vel_pub_, stamp, "world", "velocity", 0, p0, world_vel_, 1.0, 0.015, 0.03, 0.05, 1.0f, 0.8f, 0.0f);
-    publishArrow(ee_vel_pub_, stamp, "world", "ee_velocity", 0, p_ee, ee_vel_used_, 2.0, 0.015, 0.03, 0.05, 0.0f, 0.9f, 0.9f);
+    publishArrow(vc_lpf_pub_, stamp, "world", "vc_lpf", 0, p_ee, vc_lpf_, 2.0, 0.015, 0.03, 0.05, 0.0f, 0.9f, 0.9f);
     pushSmoothTrajectorySample(ee_pos, stamp);
     const auto new_history_sample = pushFrameHistorySample(ee_pos, normal_frame_quat, stamp);
     publishFrameHistoryDelta(stamp, expired_history_ids, new_history_sample);
@@ -831,8 +877,21 @@ private:
   void publishWall(const rclcpp::Time& stamp)
   {
     const bool use_tf_frame = !wall_marker_frame_.empty();
-    if (!use_tf_frame && !wall_pose_valid_) {
+    if (!wall_pose_valid_) {
       return;
+    }
+
+    const auto wall_orientation = normalizedQuaternion(wall_pose_.orientation);
+    if (use_tf_frame) {
+      geometry_msgs::msg::TransformStamped wall_tf;
+      wall_tf.header.stamp = stamp;
+      wall_tf.header.frame_id = "world";
+      wall_tf.child_frame_id = wall_marker_frame_;
+      wall_tf.transform.translation.x = wall_pose_.position.x;
+      wall_tf.transform.translation.y = wall_pose_.position.y;
+      wall_tf.transform.translation.z = wall_pose_.position.z;
+      wall_tf.transform.rotation = wall_orientation;
+      tf_broadcaster_->sendTransform(wall_tf);
     }
 
     visualization_msgs::msg::Marker marker;
@@ -845,8 +904,8 @@ private:
     marker.pose.orientation.w = 1.0;
     if (!use_tf_frame) {
       marker.pose = wall_pose_;
+      marker.pose.orientation = wall_orientation;
     }
-    marker.pose.orientation = normalizedQuaternion(marker.pose.orientation);
     marker.frame_locked = use_tf_frame;
     marker.scale.x = wall_scale_x_;
     marker.scale.y = wall_scale_y_;
@@ -986,6 +1045,7 @@ private:
 
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr sub_;
   rclcpp::Subscription<motion_capture_tracking_interfaces::msg::NamedPoseArray>::SharedPtr wall_pose_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr robot_pose_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_history_srv_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -998,7 +1058,7 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr normal_est_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr acc_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr vel_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr ee_vel_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr vc_lpf_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr ee_history_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr contact_history_pub_;
@@ -1014,11 +1074,13 @@ private:
   Eigen::Vector3d normal_est_;
   Eigen::Vector3d world_vel_;
   Eigen::Vector3d world_acc_;
-  Eigen::Vector3d ee_vel_used_;
+  Eigen::Vector3d vc_lpf_;
   std::array<double, 3> ee_offset_;
   std::string data_topic_;
   std::string wall_pose_topic_;
   std::string wall_pose_name_;
+  std::string robot_pose_name_;
+  std::string robot_pose_topic_;
   std::string wall_marker_frame_;
   geometry_msgs::msg::Pose wall_pose_;
   double history_sample_period_{0.2};
@@ -1036,6 +1098,7 @@ private:
   std::deque<TrajectorySample> smooth_trajectory_history_;
   std::deque<HistorySample> frame_history_;
   bool pose_valid_{false};
+  bool firmware_pose_received_{false};
   bool wall_pose_valid_{false};
 };
 

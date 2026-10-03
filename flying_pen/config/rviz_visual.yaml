@@ -7,6 +7,8 @@ rviz_visual:
     history_frame_axis_scale: 0.05
     wall_pose_topic: "/poses"
     wall_pose_name: "tilted_wall"
+    robot_pose_name: "cf2"
+    robot_pose_topic: "/cf2/pose"
     wall_marker_frame: "tilted_wall"
     wall_scale_x: 0.01
     wall_scale_y: 1.0

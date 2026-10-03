@@ -3,8 +3,8 @@ robot_types:
     firmware_params:
       su_wrench:
         mass: 0.045000  # observer mass model [kg]
-        comOffX: -0.000640  # body-frame CoM offset x [m]
-        comOffY: -0.000102  # body-frame CoM offset y [m]
+        comOffX: -0.000510  # body-frame CoM offset x [m]
+        comOffY: -0.000008  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
         rOffX: 0.085
         rOffY: 0.0
@@ -24,7 +24,7 @@ robot_types:
         velModEn: 1  # 0: disabled, 1: manual tangential velocity modulation enabled
         velModABar: 0.013  # [m/s^2], geometry-induced normal acceleration bound
         velModVMin: 0.001  # [m/s], minimum contact speed for curvature update
-        contactVelLPF: 0.4  # [Hz], shared contact-velocity LPF cutoff
+        contactVelLPF: 1.0  # [Hz], shared contact-velocity LPF cutoff
         velModNDotLPF: 0.0  # [Hz], normal-derivative LPF cutoff for curvature estimation
         velModKLPF: 0.5  # [Hz], curvature-estimate LPF cutoff
 

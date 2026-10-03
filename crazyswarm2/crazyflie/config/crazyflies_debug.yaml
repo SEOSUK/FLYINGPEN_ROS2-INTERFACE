@@ -21,62 +21,44 @@ robot_types:
       enabled: true
       default_topics:
         pose:
-          frequency: 20
+          frequency: 30
         status:
           frequency: 1
       custom_topics:
-        # Inputs used by data_MJ.m for offline MOB reconstruction and tuning plots.
-        cf_su_motor_thrust:
-          frequency: 20
-          vars: [suWrenchObs.f1, suWrenchObs.f2, suWrenchObs.f3, suWrenchObs.f4]
-        cf_su_body_torque:
-          frequency: 20
-          vars: [suWrenchObs.tauInBx, suWrenchObs.tauInBy, suWrenchObs.tauInBz]
-        cf_su_vel_pair:
-          frequency: 20
-          vars: [suWrenchObs.stateVx, suWrenchObs.stateVy, suWrenchObs.stateVz, suWrenchObs.posVx, suWrenchObs.posVy, suWrenchObs.posVz]
-        cf_gyro_body:
-          frequency: 20
-          vars: [gyro.x, gyro.y, gyro.z]
-        # cf_imu_raw_pair:
-        #   frequency: 20
-        #   vars: [accRaw.x, accRaw.y, accRaw.z, acc.x, acc.y, acc.z]
-        cf_su_acc_normal:
-          frequency: 20
-          vars: [suWrenchObs.accWx, suWrenchObs.accWy, suWrenchObs.accWz, suPosRef.nEstX, suPosRef.nEstY, suPosRef.nEstZ]
-        cf_su_velocity_modulation:
-          frequency: 20
-          vars: [suVelMod.nHatDotX, suVelMod.nHatDotY, suVelMod.nHatDotZ, suVelMod.kappaHat, suVelMod.alphaStar]
-        cf_vel_modulation_v_c:
-          frequency: 20
-          vars: [suVelMod.vcX, suVelMod.vcY, suVelMod.vcZ]
-        # cf_su_normal_debug:
-        #   frequency: 20
-        #   vars: [suPosRef.nPreX, suPosRef.nPreY, suPosRef.nPreZ, suPosRef.nPostX, suPosRef.nPostY, suPosRef.nPostZ]
-
-        # Online force recovery pipeline: f_hat_l -> f_bar_l -> f_hat_c.
-        # cf_mob_raw:
-        #   frequency: 20
-        #   vars: [suWrenchObs.fHatWx, suWrenchObs.fHatWy, suWrenchObs.fHatWz]
-        # cf_force_bar:
-        #   frequency: 20
-        #   vars: [suThrustEff.fBarX, suThrustEff.fBarY, suThrustEff.fBarZ, suThrustEff.etaHat]
-        cf_contact_force:
-          frequency: 20
-          vars: [suThrustEff.fContactX, suThrustEff.fContactY, suThrustEff.fContactZ]
-        # cf_su_normal_metrics:
-        #   frequency: 20
-        #   vars: [suPosRef.vEeX, suPosRef.vEeY, suPosRef.vEeZ, suPosRef.omgN, suPosRef.nVelLeak]
-        vel_att_des:
+        # Velocity/noise diagnosis. Each block stays below the Crazyflie 26-byte payload limit.
+        cf_kalman_timing:
           frequency: 10
-          vars: [posCtl.targetVX, posCtl.targetVY, posCtl.targetVZ]
-        # cf_ctrl_misc:
-        #   frequency: 10
-        #   vars: [pm.vbat, ctrltarget.x, ctrltarget.y, ctrltarget.z]
-        # cf_stabilizer_timing:
-        #   frequency: 20
-        #   vars: [stabilizer.loopDtUs, stabilizer.loopDtUsMax]
-#         # Desired translational velocity from the position controller.
+          vars: [kalman.rtPred, kalman.rtUpdate, kalman.rtFinal, kalman.resetCnt, kalman.supResetCnt, kalman.stateUpdCnt]
+        cf_loop_timing:
+          frequency: 10
+          vars: [stabilizer.loopDtUs, stabilizer.loopDtUsMax, stabilizer.loopOvrCnt]
+        cf_extpos_timing:
+          frequency: 20
+          vars: [locSrv.rxDtMs, locSrv.rxCount, locSrv.gapCount, locSrv.gapLastMs, locSrv.rxDtMaxMs]
+        cf_extpos_xyz:
+          frequency: 30
+          vars: [locSrv.x, locSrv.y, locSrv.z]
+        cf_state_posvel:
+          frequency: 30
+          vars: [stateEstimate.x, stateEstimate.y, stateEstimate.z, stateEstimate.vx, stateEstimate.vy, stateEstimate.vz]
+        cf_pos_velocity:
+          frequency: 30
+          vars: [suVelFromPos.rawVx, suVelFromPos.rawVy, suVelFromPos.rawVz, suVelFromPos.vx, suVelFromPos.vy, suVelFromPos.vz]
+        cf_pos_velocity_events:
+          frequency: 10
+          vars: [suVelFromPos.dPosX, suVelFromPos.dPosY, suVelFromPos.dPosZ, suVelFromPos.rejectCnt, suVelFromPos.resetCnt]
+        cf_contact_velocity:
+          frequency: 30
+          vars: [suVelMod.vcRawX, suVelMod.vcRawY, suVelMod.vcRawZ, suVelMod.vcX, suVelMod.vcY, suVelMod.vcZ]
+        cf_contact_offset_velocity:
+          frequency: 30
+          vars: [suWrenchObs.rotVelX, suWrenchObs.rotVelY, suWrenchObs.rotVelZ]
+        cf_velocity_command:
+          frequency: 10
+          vars: [ctrltarget.vx, ctrltarget.vy, ctrltarget.vz]
+        cf_gyro_body:
+          frequency: 10
+          vars: [gyro.x, gyro.y, gyro.z]
 
 
     firmware_params:
@@ -88,6 +70,9 @@ robot_types:
       locSrv:
         extPosStdDev: 1e-3
         extQuatStdDev: 0.5e-1
+      su_position:
+        velAccXY: 5.0  # [m/s^2] 5-sample velocity regression acceleration gate
+        velAccZ: 8.0   # [m/s^2]
       imu_sensors:
         accTrimRoll: -0.47
         accTrimPitch: 0.17

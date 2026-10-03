@@ -115,8 +115,6 @@ public:
       cf_ns_ + "/pose", 10, std::bind(&DataLoggingNode::poseCallback, this, _1));
     sub_status_ = this->create_subscription<crazyflie_interfaces::msg::Status>(
       cf_ns_ + "/status", 10, std::bind(&DataLoggingNode::statusCallback, this, _1));
-    sub_cf_voltage_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_voltage", 10, std::bind(&DataLoggingNode::cfVoltageCallback, this, _1));
     sub_cmd_position_ = this->create_subscription<crazyflie_interfaces::msg::Position>(
       cf_ns_ + "/cmd_position", 10, std::bind(&DataLoggingNode::cmdPositionCallback, this, _1));
     sub_cf_ctrl_target_pos_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
@@ -165,7 +163,10 @@ public:
     push3(out, pose_xyz_);
     push3(out, pose_rpy_);
     out.data.push_back(status_batt_v_);
-    push2(out, cf_voltage_);
+    // Keep the legacy packed layout stable. The former raw/filtered voltage
+    // slots now both use the canonical /status battery voltage.
+    out.data.push_back(status_batt_v_);
+    out.data.push_back(status_batt_v_);
     push4(out, cmd_xyzyaw_);
     push3(out, fw_cmd_xyz_);
     push3(out, state_estimate_vel_);
@@ -197,12 +198,6 @@ public:
   }
 
 private:
-  static void push2(std_msgs::msg::Float64MultiArray& m, const std::array<double, 2>& a)
-  {
-    m.data.push_back(a[0]);
-    m.data.push_back(a[1]);
-  }
-
   static void push3(std_msgs::msg::Float64MultiArray& m, const std::array<double, 3>& a)
   {
     m.data.push_back(a[0]);
@@ -323,7 +318,7 @@ private:
 
     csv_ << "," << age_sec(t, t_last_pose_)
          << "," << age_sec(t, t_last_status_)
-         << "," << age_sec(t, t_last_cf_voltage_)
+         << "," << age_sec(t, t_last_status_)
          << "," << age_sec(t, t_last_cmd_position_)
          << "," << age_sec(t, t_last_cf_ctrl_target_pos_)
          << "," << age_sec(t, t_last_state_estimate_vel_)
@@ -367,7 +362,8 @@ private:
     }
     if (age_sec(t, t_last_pose_) < stale_fail_sec_) mask |= (1ull << 2);
     if (age_sec(t, t_last_status_) < stale_fail_sec_) mask |= (1ull << 3);
-    if (age_sec(t, t_last_cf_voltage_) < stale_fail_sec_) mask |= (1ull << 4);
+    // Legacy cf_voltage validity bit now mirrors the canonical status topic.
+    if (age_sec(t, t_last_status_) < stale_fail_sec_) mask |= (1ull << 4);
     if (age_sec(t, t_last_cmd_position_) < stale_fail_sec_) mask |= (1ull << 5);
     if (age_sec(t, t_last_cf_ctrl_target_pos_) < stale_fail_sec_) mask |= (1ull << 6);
     if (age_sec(t, t_last_state_estimate_vel_) < stale_fail_sec_) mask |= (1ull << 7);
@@ -398,7 +394,6 @@ private:
 
     warn_topic("pose", age_sec(t, t_last_pose_));
     warn_topic("status", age_sec(t, t_last_status_));
-    warn_topic("cf_voltage", age_sec(t, t_last_cf_voltage_));
     warn_topic("cmd_position", age_sec(t, t_last_cmd_position_));
     warn_topic("cf_ctrl_target_pos", age_sec(t, t_last_cf_ctrl_target_pos_));
     warn_topic("stateEstimate_velocity", age_sec(t, t_last_state_estimate_vel_));
@@ -439,15 +434,6 @@ private:
   {
     status_batt_v_ = msg->battery_voltage;
     t_last_status_ = now_sec();
-  }
-
-  void cfVoltageCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 2) {
-      cf_voltage_[0] = msg->values[0];
-      cf_voltage_[1] = msg->values[1];
-      t_last_cf_voltage_ = now_sec();
-    }
   }
 
   void cmdPositionCallback(const crazyflie_interfaces::msg::Position::SharedPtr msg)
@@ -599,7 +585,6 @@ private:
 
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_pose_;
   rclcpp::Subscription<crazyflie_interfaces::msg::Status>::SharedPtr sub_status_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_cf_voltage_;
   rclcpp::Subscription<crazyflie_interfaces::msg::Position>::SharedPtr sub_cmd_position_;
   rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_cf_ctrl_target_pos_;
   rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_state_estimate_velocity_;
@@ -630,7 +615,6 @@ private:
   std::array<double, 3> pose_xyz_ = {qnan(), qnan(), qnan()};
   std::array<double, 3> pose_rpy_ = {qnan(), qnan(), qnan()};
   double status_batt_v_ = qnan();
-  std::array<double, 2> cf_voltage_ = {qnan(), qnan()};
   std::array<double, 4> cmd_xyzyaw_ = {qnan(), qnan(), qnan(), qnan()};
   std::array<double, 3> fw_cmd_xyz_ = {qnan(), qnan(), qnan()};
   std::array<double, 3> state_estimate_vel_ = {qnan(), qnan(), qnan()};
@@ -650,7 +634,6 @@ private:
 
   double t_last_pose_ = qnan();
   double t_last_status_ = qnan();
-  double t_last_cf_voltage_ = qnan();
   double t_last_cmd_position_ = qnan();
   double t_last_cf_ctrl_target_pos_ = qnan();
   double t_last_state_estimate_vel_ = qnan();

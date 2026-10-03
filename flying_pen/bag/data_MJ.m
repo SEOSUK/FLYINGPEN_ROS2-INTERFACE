@@ -403,7 +403,7 @@ fprintf("[INFO] Offline point-contact MOB Ktau %.3f, KpTau %.6f, Ke %.3f, eta ga
     offline_pc_Ktau, offline_pc_KpTau, offline_pc_Ke, offline_eta_gamma);
 
 %% 3) Plot: Filtered Contact Velocity
-contact_velocity_xlim = [];                    % e.g. [10 80], [] keeps auto x-limits-0.2 0.2
+contact_velocity_xlim = [130 250];                    % e.g. [10 80], [] keeps auto x-limits-0.2 0.2
 contact_velocity_component_ylims = {[-0.2 0.2], [-0.2 0.2], [-0.2 0.2]}; % {vcX, vcY, vcZ}, e.g. {[-0.1 0.1], [-0.1 0.1], [-0.1 0.1]}
 contact_velocity_norm_ylim = [];               % e.g. [0 0.15], [] keeps auto y-limits
 contact_velocity_scalar_ylim = [];             % e.g. [0 1], [] keeps auto y-limits

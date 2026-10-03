@@ -4,3 +4,5 @@ command_publisher:
     velocity_tick: [0.07, 0.07, 0.07]
     yaw_tick_deg: 2.0
     force_tick: 0.02
+    square_speed: 0.14
+    square_size: 1.0

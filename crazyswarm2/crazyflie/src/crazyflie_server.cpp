@@ -54,6 +54,7 @@ constexpr uint8_t kPositionControlTriggerMagic = 0xA5;
 constexpr uint8_t kPositionControlTriggerVersion = 0x02;
 constexpr uint8_t kHoverCalibrationTriggerMagic = 0xA6;
 constexpr uint8_t kHoverCalibrationTriggerVersion = 0x01;
+constexpr int64_t kDiagnosticWarningThrottleMs = 5000;
 
 std::string replace_yaml_scalar_line(const std::string& line, double value)
 {
@@ -1208,22 +1209,26 @@ private:
 
       // warnings
       if (msg.num_rx_unicast > msg.num_tx_unicast * 1.05 /*allow some slack*/) {
-        RCLCPP_WARN(logger_, "[%s] Unexpected number of unicast packets. Sent: %d. Received: %d", name_.c_str(), msg.num_tx_unicast, msg.num_rx_unicast);
+        RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), kDiagnosticWarningThrottleMs,
+          "[%s] Unexpected number of unicast packets. Sent: %d. Received: %d", name_.c_str(), msg.num_tx_unicast, msg.num_rx_unicast);
       }
       if (msg.num_tx_unicast > 0) {
         float unicast_receive_rate = msg.num_rx_unicast / (float)msg.num_tx_unicast;
         if (unicast_receive_rate < min_unicast_receive_rate_) {
-          RCLCPP_WARN(logger_, "[%s] Low unicast receive rate (%.2f < %.2f). Sent: %d. Received: %d", name_.c_str(), unicast_receive_rate, min_unicast_receive_rate_, msg.num_tx_unicast, msg.num_rx_unicast);
+          RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), kDiagnosticWarningThrottleMs,
+            "[%s] Low unicast receive rate (%.2f < %.2f). Sent: %d. Received: %d", name_.c_str(), unicast_receive_rate, min_unicast_receive_rate_, msg.num_tx_unicast, msg.num_rx_unicast);
         }
       }
 
       if (msg.num_rx_broadcast > msg.num_tx_broadcast * 1.05 /*allow some slack*/) {
-        RCLCPP_WARN(logger_, "[%s] Unexpected number of broadcast packets. Sent: %d. Received: %d", name_.c_str(), msg.num_tx_broadcast, msg.num_rx_broadcast);
+        RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), kDiagnosticWarningThrottleMs,
+          "[%s] Unexpected number of broadcast packets. Sent: %d. Received: %d", name_.c_str(), msg.num_tx_broadcast, msg.num_rx_broadcast);
       }
       if (msg.num_tx_broadcast > 0) {
         float broadcast_receive_rate = msg.num_rx_broadcast / (float)msg.num_tx_broadcast;
         if (broadcast_receive_rate < min_broadcast_receive_rate_) {
-          RCLCPP_WARN(logger_, "[%s] Low broadcast receive rate (%.2f < %.2f). Sent: %d. Received: %d", name_.c_str(), broadcast_receive_rate, min_broadcast_receive_rate_, msg.num_tx_broadcast, msg.num_rx_broadcast);
+          RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), kDiagnosticWarningThrottleMs,
+            "[%s] Low broadcast receive rate (%.2f < %.2f). Sent: %d. Received: %d", name_.c_str(), broadcast_receive_rate, min_broadcast_receive_rate_, msg.num_tx_broadcast, msg.num_rx_broadcast);
         }
       }
     }
@@ -1249,7 +1254,8 @@ private:
     auto now = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = now - last_on_latency_;
     if (elapsed.count() > 1.0 / warning_freq_) {
-      RCLCPP_WARN(logger_, "[%s] last latency update: %f s", name_.c_str(), elapsed.count());
+      RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), kDiagnosticWarningThrottleMs,
+        "[%s] last latency update: %f s", name_.c_str(), elapsed.count());
     }
 
     auto stats = cf_.connectionStatsDelta();
@@ -1257,7 +1263,8 @@ private:
     if (stats.ack_count > 0) {
       float ack_rate = stats.sent_count / stats.ack_count;
       if (ack_rate < min_ack_rate_) {
-        RCLCPP_WARN(logger_, "[%s] Ack rate: %.1f %%", name_.c_str(), ack_rate * 100);
+        RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), kDiagnosticWarningThrottleMs,
+          "[%s] Ack rate: %.1f %%", name_.c_str(), ack_rate * 100);
       }
     }
 
@@ -1281,7 +1288,8 @@ private:
   void on_latency(uint64_t latency_in_us)
   {
     if (latency_in_us / 1000.0 > max_latency_) {
-      RCLCPP_WARN(logger_, "[%s] High latency: %.1f ms", name_.c_str(), latency_in_us / 1000.0);
+      RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), kDiagnosticWarningThrottleMs,
+        "[%s] High latency: %.1f ms", name_.c_str(), latency_in_us / 1000.0);
     }
     last_on_latency_ = std::chrono::steady_clock::now();
     last_latency_in_ms_ = (uint16_t)(latency_in_us / 1000.0);
@@ -1402,7 +1410,7 @@ public:
     if (freq >= 0.0) {
       watchdog_timer_ = this->create_wall_timer(std::chrono::milliseconds((int)(1000.0/freq)), std::bind(&CrazyflieServer::on_watchdog_timer, this), callback_group_all_srv_);
     }
-    this->declare_parameter("warnings.motion_capture.warning_if_rate_outside", std::vector<double>({80.0, 120.0}));
+    this->declare_parameter("warnings.motion_capture.warning_if_rate_outside", std::vector<double>({60.0, 140.0}));
     auto rate_range = this->get_parameter("warnings.motion_capture.warning_if_rate_outside").get_parameter_value().get<std::vector<double>>();
     mocap_min_rate_ = rate_range[0];
     mocap_max_rate_ = rate_range[1];
@@ -1480,6 +1488,8 @@ public:
     sensor_data_qos.deadline(rclcpp::Duration(0/*s*/, 1e9/poses_qos_deadline /*ns*/));
     sub_poses_ = this->create_subscription<NamedPoseArray>(
         "poses", sensor_data_qos, std::bind(&CrazyflieServer::posesChanged, this, _1), sub_opt_mocap);
+    mocap_receive_debug_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
+        "mocap_receive_debug", rclcpp::SensorDataQoS().keep_last(1));
 
     // support for all.params
 
@@ -1681,7 +1691,29 @@ private:
 
   void posesChanged(const NamedPoseArray::SharedPtr msg)
   {
-    mocap_data_received_timepoints_.emplace_back(std::chrono::steady_clock::now());
+    const auto mocap_rx_now = std::chrono::steady_clock::now();
+    mocap_data_received_timepoints_.emplace_back(mocap_rx_now);
+
+    double mocap_rx_dt_ms = std::numeric_limits<double>::quiet_NaN();
+    if (mocap_previous_rx_valid_) {
+      mocap_rx_dt_ms = std::chrono::duration<double, std::milli>(
+        mocap_rx_now - mocap_previous_rx_time_).count();
+    }
+    mocap_previous_rx_time_ = mocap_rx_now;
+    mocap_previous_rx_valid_ = true;
+    ++mocap_rx_count_;
+
+    const double source_time_sec = rclcpp::Time(msg->header.stamp).seconds();
+    const double source_age_ms = source_time_sec > 0.0 ?
+      (this->get_clock()->now().seconds() - source_time_sec) * 1000.0 :
+      std::numeric_limits<double>::quiet_NaN();
+    std_msgs::msg::Float64MultiArray mocap_debug;
+    mocap_debug.data = {
+      mocap_rx_dt_ms,
+      static_cast<double>(mocap_rx_count_),
+      source_time_sec,
+      source_age_ms};
+    mocap_receive_debug_pub_->publish(mocap_debug);
 
     // Here, we send all the poses to all CFs
     // In Crazyswarm1, we only sent the poses of the same group (i.e. channel)
@@ -1815,11 +1847,13 @@ private:
       mean_rate /= (mocap_data_received_timepoints_.size() - 1);
 
       if (num_rates_wrong > 0) {
-        RCLCPP_WARN(logger_, "[all] Motion capture rate off (#: %d, Avg: %.1f, Min: %.1f, Max: %.1f)", num_rates_wrong, mean_rate, min_rate, max_rate);
+        RCLCPP_WARN_THROTTLE(logger_, *get_clock(), kDiagnosticWarningThrottleMs,
+          "[all] Motion capture rate off (#: %d, Avg: %.1f, Min: %.1f, Max: %.1f)", num_rates_wrong, mean_rate, min_rate, max_rate);
       }
     } else if (mocap_enabled_) {
       // b) warn if no data was received
-      RCLCPP_WARN(logger_, "[all] Motion capture did not receive data!");
+      RCLCPP_WARN_THROTTLE(logger_, *get_clock(), kDiagnosticWarningThrottleMs,
+        "[all] Motion capture did not receive data!");
     }
 
     mocap_data_received_timepoints_.clear();
@@ -1882,6 +1916,7 @@ private:
     rclcpp::Subscription<crazyflie_interfaces::msg::Hover>::SharedPtr subscription_cmd_hover_;
     rclcpp::Subscription<crazyflie_interfaces::msg::VelocityWorld>::SharedPtr subscription_cmd_velocity_world_;
     rclcpp::Subscription<NamedPoseArray>::SharedPtr sub_poses_;
+    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr mocap_receive_debug_pub_;
 
     // services
     rclcpp::Service<Empty>::SharedPtr service_emergency_;
@@ -1916,6 +1951,9 @@ private:
     float mocap_min_rate_;
     float mocap_max_rate_;
     std::vector<std::chrono::time_point<std::chrono::steady_clock>> mocap_data_received_timepoints_;
+    std::chrono::steady_clock::time_point mocap_previous_rx_time_{};
+    uint64_t mocap_rx_count_{0};
+    bool mocap_previous_rx_valid_{false};
     bool publish_stats_;
     rclcpp::Publisher<crazyflie_interfaces::msg::ConnectionStatisticsArray>::SharedPtr publisher_connection_stats_;
 

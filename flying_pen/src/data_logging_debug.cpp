@@ -1,23 +1,12 @@
-// data_logging_debug.cpp
-// 목적: suWrenchObs SI 디버그 로그를 별도 CSV + Float64MultiArray로 저장한다.
-
+// Velocity/noise diagnostic logger. Firmware behavior is not modified here.
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
-#include "geometry_msgs/msg/pose_stamped.hpp"
-
 #include <crazyflie_interfaces/msg/log_data_generic.hpp>
-#include <crazyflie_interfaces/msg/position.hpp>
-#include <crazyflie_interfaces/msg/position_control.hpp>
-#include <crazyflie_interfaces/msg/status.hpp>
 #include <motion_capture_tracking_interfaces/msg/named_pose_array.hpp>
-
-#include <tf2/LinearMath/Matrix3x3.h>
-#include <tf2/LinearMath/Quaternion.h>
-
 #include <array>
 #include <chrono>
-#include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
@@ -25,780 +14,153 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
-#include <sstream>
+#include <map>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
+using LogMsg = crazyflie_interfaces::msg::LogDataGeneric;
+using PosesMsg = motion_capture_tracking_interfaces::msg::NamedPoseArray;
+using Clock = std::chrono::steady_clock;
 using std::placeholders::_1;
 
-static std::string expand_user_debug(const std::string & path)
-{
-  if (!path.empty() && path[0] == '~') {
-    const char * home = std::getenv("HOME");
-    if (home) {
-      return std::string(home) + path.substr(1);
-    }
-  }
-  return path;
+namespace {
+double nanv() { return std::numeric_limits<double>::quiet_NaN(); }
+std::string expand_user(const std::string & p) {
+  if (!p.empty() && p[0] == '~') if (const char * h = std::getenv("HOME")) return std::string(h) + p.substr(1);
+  return p;
 }
-
-static std::string now_mmddhhmm_debug()
-{
-  std::time_t t = std::time(nullptr);
-  std::tm tm{};
-#if defined(_WIN32)
-  localtime_s(&tm, &t);
-#else
-  localtime_r(&t, &tm);
-#endif
-  char buf[64];
-  std::strftime(buf, sizeof(buf), "%m%d%H%M", &tm);
-  return std::string(buf);
+std::string timestamp() {
+  std::time_t raw = std::time(nullptr); std::tm tm{}; localtime_r(&raw, &tm); char s[32];
+  std::strftime(s, sizeof(s), "%Y%m%d_%H%M%S", &tm); return s;
 }
-
-static inline double qnan_debug()
-{
-  return std::numeric_limits<double>::quiet_NaN();
+std::string sanitize(const std::string & v) {
+  std::string r; for (char c : v) r.push_back(std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' ? c : '_'); return r;
 }
+}  // namespace
 
-static std::string sanitize_filename_component_debug(const std::string & text)
-{
-  std::string out;
-  out.reserve(text.size());
-  for (const char c : text) {
-    const bool ok =
-      (c >= '0' && c <= '9') ||
-      (c >= 'a' && c <= 'z') ||
-      (c >= 'A' && c <= 'Z') ||
-      c == '_' || c == '-' || c == '.';
-    out.push_back(ok ? c : '_');
-  }
-  return out;
-}
-
-class DataLoggingDebugNode : public rclcpp::Node
-{
+class VelocityDebugLogger final : public rclcpp::Node {
 public:
-  //  0.. 5 : pose_x y z roll pitch yaw
-  //  6.. 9 : cmd_x y z yaw [m, rad]
-  // 10..12 : fw_cmd_x y z [m]
-  // 13..16 : thrust_f1 f2 f3 f4 [N]
-  // 17..20 : pwm_1 2 3 4 [ratio]
-  // 21..23 : body_force xyz [N]
-  // 24..26 : world_force xyz [N]
-  // 27..29 : body_torque xyz [N*m]
-  // 30..32 : state_vel xyz [m/s]
-  // 33..35 : pos_vel xyz [m/s]
-  // 36..38 : acc xyz [m/s^2]
-  // 39..41 : vel_des xyz [m/s]
-  // 42..44 : att_des rpy [deg]
-  // 45     : status_battery_voltage [V]
-  // 46     : pm_vbat [V]
-  // 47     : zero_bias_count
-  // 48..50 : mob_force_none xyz [N]
-  // 51..53 : mob_force_residual xyz [N]
-  // 54..56 : mob_force_final xyz [N]
-  // 57..59 : mob_torque xyz [N*m]
-  // 60..62 : mob_residual xyz [N*m]
-  // 63..65 : accRaw xyz [G], body frame
-  // 66..68 : acc xyz [G], body frame
-  // 69     : force_desired [N], scalar preload force command from PositionControl
-  // 70..72 : normal_preproj xyz [-], normalized force-direction evidence
-  // 73..75 : normal_postproj xyz [-], velocity-projected normal candidate
-  // 76..78 : normal_estimation xyz [-], estimated world normal vector
-  // 79..81 : ee_vel_used xyz [m/s], 1 Hz LPF contact/end-effector velocity used in normal estimation
-  // 82     : omega_n [1/s], 1 Hz LPF norm of d/dt(normal_est)
-  // 83     : normal_velocity_leakage [m/s], 1 Hz LPF |n_hat^T v_EE|
-  // 84     : stabilizer loop elapsed time [us]
-  // 85     : stabilizer loop elapsed time max since boot [us]
-  // 86     : alpha_frame [-], tangential command gating factor
-  // 87     : t1_cmd_des [m/s], gated desired tangential command in t1
-  // 88     : t2_cmd_des [m/s], gated desired tangential command in t2
-  // 89..91 : tilted_wall position xyz [m], world frame
-  // 92..95 : tilted_wall orientation xyzw [-], world frame
-  // 96     : firmware thrust effectiveness eta_hat [-]
-  // 97..99 : firmware matched force xyz [N], world frame
-  // 100..102 : firmware point-contact torque residual xyz [N*m], world frame
-  // 103..105 : legacy thrustEffCorrF xyz [N], world frame (historical f_bar_l slots)
-  // New pipeline fields are append-only; the numeric layout through index 105 is unchanged.
-  // 106..108 : rawMobF xyz [N], world frame
-  // 109..111 : rawMobT xyz [N*m], world frame (legacy slots; no longer populated)
-  // 112..114 : contactF xyz [N], world frame
-  // 115      : etaHat [-]
-  // 116..118 : forceBarF xyz [N], world frame
-  // 119..121 : gyroBody xyz [deg/s], body frame
-  // 122..124 : n_hat_dot xyz [1/s], firmware normal-estimator derivative
-  // 125      : kappa_hat [1/m], firmware curvature estimate
-  // 126      : alpha_star [-], firmware velocity-modulation scale
-  // 127..129 : raw contact velocity xyz [m/s] used by firmware curvature estimate
-  enum DebugIndex : std::size_t {
-    IDX_RAW_MOB_FX = 106,
-    IDX_RAW_MOB_FY,
-    IDX_RAW_MOB_FZ,
-    IDX_RAW_MOB_TX,
-    IDX_RAW_MOB_TY,
-    IDX_RAW_MOB_TZ,
-    IDX_CONTACT_FX,
-    IDX_CONTACT_FY,
-    IDX_CONTACT_FZ,
-    IDX_ETA_HAT,
-    IDX_FORCE_BAR_FX,
-    IDX_FORCE_BAR_FY,
-    IDX_FORCE_BAR_FZ,
-    IDX_GYRO_BODY_X,
-    IDX_GYRO_BODY_Y,
-    IDX_GYRO_BODY_Z,
-    IDX_N_HAT_DOT_X,
-    IDX_N_HAT_DOT_Y,
-    IDX_N_HAT_DOT_Z,
-    IDX_KAPPA_HAT,
-    IDX_ALPHA_STAR,
-    IDX_CURVATURE_VC_X,
-    IDX_CURVATURE_VC_Y,
-    IDX_CURVATURE_VC_Z,
-    DEBUG_DATA_SIZE
-  };
-  static constexpr std::size_t kDataLen = DEBUG_DATA_SIZE;
-  static_assert(IDX_RAW_MOB_FX == 106, "new fields must remain append-only");
-  static_assert(IDX_CONTACT_FX == 112, "contact-force indices must remain stable");
-  static_assert(IDX_ETA_HAT == 115, "etaHat index must remain stable");
-  static_assert(IDX_FORCE_BAR_FX == 116, "forceBar must be appended after the existing layout");
-  static_assert(IDX_GYRO_BODY_X == 119, "body gyro must be append-only");
-  static_assert(IDX_N_HAT_DOT_X == 122, "velocity modulation telemetry must be append-only");
-  static_assert(IDX_ALPHA_STAR == 126, "velocity modulation telemetry layout changed");
-  static_assert(IDX_CURVATURE_VC_X == 127, "filtered contact velocity must be append-only");
-  static_assert(IDX_CURVATURE_VC_Z == 129, "filtered contact velocity layout changed");
-
-  DataLoggingDebugNode()
-  : Node("data_logging_debug")
-  {
-    csv_dir_ = expand_user_debug(this->declare_parameter<std::string>(
-      "csv_dir", "~/hitl_ws/src/flying_pen/bag/logging"));
-    publish_topic_ = this->declare_parameter<std::string>("publish_topic", "/data_logging_msg_debug");
-    cf_ns_ = this->declare_parameter<std::string>("cf_ns", "/cf2");
-    loop_hz_ = this->declare_parameter<double>("loop_hz", 50.0);
-
+  VelocityDebugLogger() : Node("data_logging_debug"), start_(Clock::now()), last_row_(start_) {
+    csv_dir_ = expand_user(declare_parameter<std::string>("csv_dir", "~/hitl_ws/src/flying_pen/bag/logging"));
+    cf_ns_ = declare_parameter<std::string>("cf_ns", "/cf2");
+    loop_hz_ = declare_parameter<double>("loop_hz", 50.0);
+    robot_name_ = cf_ns_; while (!robot_name_.empty() && robot_name_.front() == '/') robot_name_.erase(robot_name_.begin());
     std::filesystem::create_directories(csv_dir_);
-    csv_path_ = (std::filesystem::path(csv_dir_) / (now_mmddhhmm_debug() + "_debug.csv")).string();
+    csv_path_ = (std::filesystem::path(csv_dir_) / (timestamp() + "_velocity_debug.csv")).string();
     csv_.open(csv_path_, std::ios::out | std::ios::trunc);
-    if (!csv_.is_open()) {
-      RCLCPP_ERROR(get_logger(), "Failed to open CSV file: %s", csv_path_.c_str());
-    } else {
-      write_csv_header();
-      RCLCPP_INFO(get_logger(), "CSV logging enabled: %s", csv_path_.c_str());
-    }
-
-    data_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(publish_topic_, 10);
-
-    auto sensor_qos = rclcpp::QoS(
-      rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 10),
-      rmw_qos_profile_sensor_data);
-
-    sub_pose_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-      cf_ns_ + "/pose", 10, std::bind(&DataLoggingDebugNode::poseCallback, this, _1));
-    sub_named_poses_ = this->create_subscription<motion_capture_tracking_interfaces::msg::NamedPoseArray>(
-      "/poses", sensor_qos, std::bind(&DataLoggingDebugNode::namedPosesCallback, this, _1));
-    sub_cmd_position_ = this->create_subscription<crazyflie_interfaces::msg::Position>(
-      cf_ns_ + "/cmd_position", 10, std::bind(&DataLoggingDebugNode::cmdPositionCallback, this, _1));
-    sub_cmd_position_control_ = this->create_subscription<crazyflie_interfaces::msg::PositionControl>(
-      cf_ns_ + "/cmd_position_control", 10, std::bind(&DataLoggingDebugNode::cmdPositionControlCallback, this, _1));
-    sub_ctrl_misc_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_ctrl_misc", 10, std::bind(&DataLoggingDebugNode::ctrlMiscCallback, this, _1));
-    sub_status_ = this->create_subscription<crazyflie_interfaces::msg::Status>(
-      cf_ns_ + "/status", 10, std::bind(&DataLoggingDebugNode::statusCallback, this, _1));
-    sub_motor_thrust_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_motor_thrust", 10, std::bind(&DataLoggingDebugNode::motorThrustCallback, this, _1));
-    sub_motor_pwm_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_motor_pwm", 10, std::bind(&DataLoggingDebugNode::motorPwmCallback, this, _1));
-    sub_body_force_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_body_force", 10, std::bind(&DataLoggingDebugNode::bodyForceCallback, this, _1));
-    sub_world_force_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_world_force", 10, std::bind(&DataLoggingDebugNode::worldForceCallback, this, _1));
-    sub_body_torque_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_body_torque", 10, std::bind(&DataLoggingDebugNode::bodyTorqueCallback, this, _1));
-    sub_vel_pair_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_vel_pair", 10, std::bind(&DataLoggingDebugNode::velPairCallback, this, _1));
-    sub_gyro_body_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_gyro_body", 10, std::bind(&DataLoggingDebugNode::gyroBodyCallback, this, _1));
-    sub_acc_normal_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_acc_normal", 10, std::bind(&DataLoggingDebugNode::accNormalCallback, this, _1));
-    sub_normal_debug_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_normal_debug", 10, std::bind(&DataLoggingDebugNode::normalDebugCallback, this, _1));
-    sub_mob_raw_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_mob_raw", 10, std::bind(&DataLoggingDebugNode::mobRawCallback, this, _1));
-    sub_force_bar_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_force_bar", 10, std::bind(&DataLoggingDebugNode::forceBarCallback, this, _1));
-    sub_contact_force_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_contact_force", 10, std::bind(&DataLoggingDebugNode::contactForceCallback, this, _1));
-    sub_normal_metrics_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_normal_metrics", 10, std::bind(&DataLoggingDebugNode::normalMetricsCallback, this, _1));
-    sub_stabilizer_timing_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_stabilizer_timing", 10, std::bind(&DataLoggingDebugNode::stabilizerTimingCallback, this, _1));
-    sub_alpha_frame_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_alpha_frame", 10, std::bind(&DataLoggingDebugNode::alphaFrameCallback, this, _1));
-    sub_imu_raw_pair_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_imu_raw_pair", 10, std::bind(&DataLoggingDebugNode::imuRawPairCallback, this, _1));
-    sub_vel_att_des_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/vel_att_des", 10, std::bind(&DataLoggingDebugNode::velAttDesCallback, this, _1));
-    sub_velocity_modulation_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_su_velocity_modulation", 10,
-      std::bind(&DataLoggingDebugNode::velocityModulationCallback, this, _1));
-    sub_velocity_modulation_v_c_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      cf_ns_ + "/cf_vel_modulation_v_c", 10,
-      std::bind(&DataLoggingDebugNode::velocityModulationContactVelocityCallback, this, _1));
-    sub_filename_tag_ = this->create_subscription<std_msgs::msg::String>(
-      "/flying_pen/debug_log_filename_tag", 10,
-      std::bind(&DataLoggingDebugNode::filenameTagCallback, this, _1));
-
-    RCLCPP_INFO(get_logger(), "data_logging_debug node started");
+    if (!csv_) throw std::runtime_error("Cannot open " + csv_path_);
+    write_header();
+    poses_sub_ = create_subscription<PosesMsg>("/poses", rclcpp::SensorDataQoS(), std::bind(&VelocityDebugLogger::poses, this, _1));
+    received_["mocap_receive_debug"] = false;
+    mocap_debug_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+      "/mocap_receive_debug", rclcpp::SensorDataQoS().keep_last(1),
+      std::bind(&VelocityDebugLogger::mocap_debug, this, _1));
+    bind("cf_kalman_timing", 6, &VelocityDebugLogger::kalman_);
+    bind("cf_loop_timing", 3, &VelocityDebugLogger::loop_);
+    bind("cf_extpos_timing", 5, &VelocityDebugLogger::ext_timing_);
+    bind("cf_extpos_xyz", 3, &VelocityDebugLogger::ext_xyz_);
+    bind("cf_state_posvel", 6, &VelocityDebugLogger::state_);
+    bind("cf_pos_velocity", 6, &VelocityDebugLogger::pos_velocity_);
+    bind("cf_pos_velocity_events", 5, &VelocityDebugLogger::pos_events_);
+    bind("cf_contact_velocity", 6, &VelocityDebugLogger::contact_velocity_);
+    bind("cf_contact_offset_velocity", 3, &VelocityDebugLogger::contact_offset_velocity_);
+    bind("cf_velocity_command", 3, &VelocityDebugLogger::command_);
+    bind("cf_gyro_body", 3, &VelocityDebugLogger::gyro_);
+    tag_sub_ = create_subscription<std_msgs::msg::String>("/flying_pen/debug_log_filename_tag", 10, std::bind(&VelocityDebugLogger::tag, this, _1));
+    publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>("/data_logging_msg_debug", 10);
+    startup_timer_ = create_wall_timer(std::chrono::seconds(5), std::bind(&VelocityDebugLogger::check_topics, this));
+    RCLCPP_INFO(get_logger(), "Velocity debug CSV: %s", csv_path_.c_str());
   }
-
-  ~DataLoggingDebugNode() override
-  {
-    if (csv_.is_open()) {
-      csv_.flush();
-      csv_.close();
-    }
-  }
-
+  ~VelocityDebugLogger() override { csv_.flush(); }
   double loop_hz() const { return loop_hz_; }
-
-  void loopOnce()
-  {
-    std_msgs::msg::Float64MultiArray out;
-    out.data.reserve(kDataLen);
-
-    push3(out, pose_xyz_);
-    push3(out, pose_rpy_);
-    push4(out, cmd_xyzyaw_);
-    push3(out, fw_cmd_xyz_);
-    push4(out, motor_thrust_);
-    push4(out, motor_pwm_);
-    push3(out, body_force_);
-    push3(out, world_force_);
-    push3(out, body_torque_);
-    push3(out, state_vel_);
-    push3(out, pos_vel_);
-    push3(out, acc_);
-    push3(out, vel_des_);
-    push3(out, att_des_);
-    out.data.push_back(status_batt_v_);
-    out.data.push_back(pm_vbat_);
-    out.data.push_back(zero_bias_count_);
-    push3(out, mob_force_none_);
-    push3(out, mob_force_residual_);
-    push3(out, mob_force_final_);
-    push3(out, mob_torque_);
-    push3(out, mob_residual_);
-    push3(out, acc_raw_body_);
-    push3(out, acc_body_);
-    out.data.push_back(force_desired_);
-    push3(out, normal_preproj_);
-    push3(out, normal_postproj_);
-    push3(out, normal_est_);
-    push3(out, ee_vel_used_);
-    out.data.push_back(omega_n_);
-    out.data.push_back(normal_velocity_leakage_);
-    out.data.push_back(stabilizer_loop_dt_us_);
-    out.data.push_back(stabilizer_loop_dt_us_max_);
-    out.data.push_back(alpha_frame_);
-    out.data.push_back(t1_cmd_des_);
-    out.data.push_back(t2_cmd_des_);
-    push3(out, wall_xyz_);
-    push4(out, wall_quat_xyzw_);
-    out.data.push_back(thrust_eff_eta_hat_);
-    push3(out, thrust_eff_match_force_);
-    push3(out, thrust_eff_residual_);
-    push3(out, legacy_force_bar_);
-    push3(out, raw_mob_force_);
-    push3(out, raw_mob_torque_);
-    push3(out, contact_force_);
-    out.data.push_back(eta_hat_);
-    push3(out, force_bar_);
-    push3(out, gyro_body_deg_s_);
-    push3(out, n_hat_dot_);
-    out.data.push_back(kappa_hat_);
-    out.data.push_back(alpha_star_);
-    push3(out, curvature_contact_velocity_);
-
-    if (out.data.size() != static_cast<size_t>(kDataLen)) {
-      out.data.resize(kDataLen, qnan_debug());
+  void write_row() {
+    const auto now = Clock::now();
+    const double t = std::chrono::duration<double>(now - start_).count();
+    const double dt_ms = std::chrono::duration<double, std::milli>(now - last_row_).count(); last_row_ = now;
+    std::vector<double> row; row.reserve(58); row.push_back(t); row.push_back(dt_ms);
+    append(row, mocap_xyz_); row.push_back(mocap_dt_ms_); row.push_back(mocap_count_);
+    row.push_back(mocap_source_time_); row.push_back(mocap_source_age_ms_);
+    append(row, ext_xyz_); append(row, ext_timing_); append(row, kalman_); append(row, loop_);
+    append(row, state_); append(row, pos_velocity_); append(row, pos_events_);
+    append(row, contact_velocity_); append(row, contact_offset_velocity_);
+    append(row, command_); append(row, gyro_);
+    csv_ << std::fixed << std::setprecision(9);
+    for (size_t i = 0; i < row.size(); ++i) {
+      csv_ << (i ? "," : "") << row[i];
     }
-
-    data_pub_->publish(out);
-    log_csv_row(out);
+    csv_ << '\n';
+    if (t - last_flush_sec_ >= 1.0) { csv_.flush(); last_flush_sec_ = t; }
+    std_msgs::msg::Float64MultiArray msg; msg.data = row; publisher_->publish(msg);
   }
-
 private:
-  static void push3(std_msgs::msg::Float64MultiArray & m, const std::array<double, 3> & a)
-  {
-    m.data.push_back(a[0]);
-    m.data.push_back(a[1]);
-    m.data.push_back(a[2]);
+  template<size_t N> static void append(std::vector<double> & row, const std::array<double, N> & a) { row.insert(row.end(), a.begin(), a.end()); }
+  template<size_t N> void bind(const std::string & topic, size_t expected, std::array<double, N> VelocityDebugLogger::* field) {
+    received_[topic] = false;
+    subscriptions_.push_back(create_subscription<LogMsg>(cf_ns_ + "/" + topic, 10,
+      [this, topic, expected, field](const LogMsg::SharedPtr msg) {
+        if (msg->values.size() != expected) {
+          RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "%s expected %zu fields, received %zu", topic.c_str(), expected, msg->values.size()); return;
+        }
+        auto & dst = this->*field; for (size_t i = 0; i < N; ++i) dst[i] = msg->values[i]; received_[topic] = true;
+      }));
   }
-
-  static void push4(std_msgs::msg::Float64MultiArray & m, const std::array<double, 4> & a)
-  {
-    m.data.push_back(a[0]);
-    m.data.push_back(a[1]);
-    m.data.push_back(a[2]);
-    m.data.push_back(a[3]);
-  }
-
-  void copy3(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg, std::array<double, 3> & dst)
-  {
-    if (msg->values.size() >= 3) {
-      dst[0] = msg->values[0];
-      dst[1] = msg->values[1];
-      dst[2] = msg->values[2];
+  void poses(const PosesMsg::SharedPtr msg) {
+    for (const auto & p : msg->poses) if (p.name == robot_name_) {
+      mocap_xyz_ = {p.pose.position.x, p.pose.position.y, p.pose.position.z}; mocap_received_ = true; break;
     }
   }
-
-  void copy4(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg, std::array<double, 4> & dst)
-  {
-    if (msg->values.size() >= 4) {
-      dst[0] = msg->values[0];
-      dst[1] = msg->values[1];
-      dst[2] = msg->values[2];
-      dst[3] = msg->values[3];
-    }
-  }
-
-  void write_csv_header()
-  {
-    csv_
-      << "pose_x,pose_y,pose_z,pose_roll,pose_pitch,pose_yaw,"
-      << "cmd_x,cmd_y,cmd_z,cmd_yaw,"
-      << "fwCmd_x,fwCmd_y,fwCmd_z,"
-      << "f1,f2,f3,f4,"
-      << "pwm1,pwm2,pwm3,pwm4,"
-      << "bodyFx,bodyFy,bodyFz,"
-      << "worldFx,worldFy,worldFz,"
-      << "bodyTx,bodyTy,bodyTz,"
-      << "stateVx,stateVy,stateVz,"
-      << "posVx,posVy,posVz,"
-      << "accWx,accWy,accWz,"
-      << "velDes_vx,velDes_vy,velDes_vz,"
-      << "attDes_roll,attDes_pitch,attDes_yaw,"
-      << "status_battery_voltage,pm_vbat,"
-      << "zero_bias_count,"
-      << "mobForceNone_x,mobForceNone_y,mobForceNone_z,"
-      << "mobForceResidual_x,mobForceResidual_y,mobForceResidual_z,"
-      << "mobForceFinal_x,mobForceFinal_y,mobForceFinal_z,"
-      << "mobTorque_x,mobTorque_y,mobTorque_z,"
-      << "mobResidual_x,mobResidual_y,mobResidual_z,"
-      << "accRawBody_x,accRawBody_y,accRawBody_z,"
-      << "accBody_x,accBody_y,accBody_z,"
-      << "forceDesired,"
-      << "normalPre_x,normalPre_y,normalPre_z,"
-      << "normalPost_x,normalPost_y,normalPost_z,"
-      << "normalEst_x,normalEst_y,normalEst_z,"
-      << "eeVelUsed_x,eeVelUsed_y,eeVelUsed_z,"
-      << "omega_n,normalVelocityLeakage,"
-      << "loopDtUs,loopDtUsMax,"
-      << "alphaFrame,t1CmdDes,t2CmdDes,"
-      << "wall_x,wall_y,wall_z,"
-      << "wall_qx,wall_qy,wall_qz,wall_qw,"
-      << "thrustEffEtaHat,"
-      << "thrustEffMatchFx,thrustEffMatchFy,thrustEffMatchFz,"
-      << "thrustEffEpsTx,thrustEffEpsTy,thrustEffEpsTz,"
-      << "thrustEffCorrFx,thrustEffCorrFy,thrustEffCorrFz,"
-      << "rawMobFx,rawMobFy,rawMobFz,"
-      << "rawMobTx,rawMobTy,rawMobTz,"
-      << "contactFx,contactFy,contactFz,etaHat,"
-      << "forceBarFx,forceBarFy,forceBarFz,"
-      << "gyroBody_x,gyroBody_y,gyroBody_z,"
-      << "n_hat_dot_x,n_hat_dot_y,n_hat_dot_z,kappa_hat,alpha_star,"
-      << "curvature_vc_x,curvature_vc_y,curvature_vc_z\n";
-    csv_.flush();
-  }
-
-  void log_csv_row(const std_msgs::msg::Float64MultiArray & msg)
-  {
-    if (!csv_.is_open()) {
+  void mocap_debug(const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+    if (msg->data.size() != 4) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+        "mocap_receive_debug expected 4 fields, received %zu", msg->data.size());
       return;
     }
-
-    csv_ << std::setprecision(10) << std::fixed;
-    for (size_t i = 0; i < msg.data.size(); ++i) {
-      if (i > 0) {
-        csv_ << ",";
-      }
-      csv_ << msg.data[i];
-    }
-    csv_ << "\n";
-    if (++csv_line_count_ % 100 == 0) {
-      csv_.flush();
-    }
+    mocap_dt_ms_ = msg->data[0];
+    mocap_count_ = msg->data[1];
+    mocap_source_time_ = msg->data[2];
+    mocap_source_age_ms_ = msg->data[3];
+    received_["mocap_receive_debug"] = true;
   }
-
-  void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
-  {
-    pose_xyz_[0] = msg->pose.position.x;
-    pose_xyz_[1] = msg->pose.position.y;
-    pose_xyz_[2] = msg->pose.position.z;
-
-    tf2::Quaternion q(
-      msg->pose.orientation.x,
-      msg->pose.orientation.y,
-      msg->pose.orientation.z,
-      msg->pose.orientation.w);
-    q.normalize();
-    double roll, pitch, yaw;
-    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-    pose_rpy_[0] = roll;
-    pose_rpy_[1] = pitch;
-    pose_rpy_[2] = yaw;
+  void check_topics() {
+    if (!mocap_received_) RCLCPP_ERROR(get_logger(), "No /poses entry for '%s'; mocap columns remain NaN", robot_name_.c_str());
+    for (const auto & x : received_) if (!x.second) RCLCPP_ERROR(get_logger(), "No data on %s/%s; verify YAML and firmware TOC", cf_ns_.c_str(), x.first.c_str());
+    startup_timer_->cancel();
   }
-
-  void namedPosesCallback(
-    const motion_capture_tracking_interfaces::msg::NamedPoseArray::SharedPtr msg)
-  {
-    for (const auto & named_pose : msg->poses) {
-      if (named_pose.name != "tilted_wall") {
-        continue;
-      }
-
-      const auto & p = named_pose.pose.position;
-      const auto & q = named_pose.pose.orientation;
-      if (
-        !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
-        !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) || !std::isfinite(q.w))
-      {
-        return;
-      }
-
-      wall_xyz_[0] = named_pose.pose.position.x;
-      wall_xyz_[1] = named_pose.pose.position.y;
-      wall_xyz_[2] = named_pose.pose.position.z;
-      wall_quat_xyzw_[0] = named_pose.pose.orientation.x;
-      wall_quat_xyzw_[1] = named_pose.pose.orientation.y;
-      wall_quat_xyzw_[2] = named_pose.pose.orientation.z;
-      wall_quat_xyzw_[3] = named_pose.pose.orientation.w;
-      return;
-    }
+  void tag(const std_msgs::msg::String::SharedPtr msg) {
+    const std::string clean = sanitize(msg->data); if (clean.empty()) return;
+    csv_.flush(); csv_.close(); const auto old = std::filesystem::path(csv_path_);
+    const auto next = old.parent_path() / (timestamp() + "_velocity_debug_" + clean + ".csv");
+    std::error_code ec; std::filesystem::rename(old, next, ec);
+    if (ec) { RCLCPP_ERROR(get_logger(), "CSV rename failed: %s", ec.message().c_str()); csv_.open(old, std::ios::app); }
+    else { csv_path_ = next.string(); csv_.open(next, std::ios::app); RCLCPP_INFO(get_logger(), "Velocity debug CSV renamed: %s", csv_path_.c_str()); }
   }
-
-  void motorThrustCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg) { copy4(msg, motor_thrust_); }
-  void motorPwmCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg) { copy4(msg, motor_pwm_); }
-  void bodyForceCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg) { copy3(msg, body_force_); }
-  void worldForceCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg) { copy3(msg, world_force_); }
-  void bodyTorqueCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg) { copy3(msg, body_torque_); }
-  void velPairCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 6) {
-      state_vel_[0] = msg->values[0];
-      state_vel_[1] = msg->values[1];
-      state_vel_[2] = msg->values[2];
-      pos_vel_[0] = msg->values[3];
-      pos_vel_[1] = msg->values[4];
-      pos_vel_[2] = msg->values[5];
-    }
+  void write_header() {
+    csv_ << "t_sec,loggerDtMs,mocapRawX,mocapRawY,mocapRawZ,mocapRxDtMs,mocapRxCount,mocapSourceTime,mocapSourceAgeMs,"
+      "extPosX,extPosY,extPosZ,extPosRxDtMs,extPosRxCount,extPosGapCount,extPosGapLastMs,extPosRxDtMaxMs,"
+      "kalmanRtPred,kalmanRtUpdate,kalmanRtFinal,kalmanResetCount,kalmanSupervisorResetCount,stateUpdateCount,loopDtUs,loopDtMaxUs,loopOverrunCount,"
+      "stateX,stateY,stateZ,stateVx,stateVy,stateVz,posRawVx,posRawVy,posRawVz,posVx,posVy,posVz,"
+      "posDeltaX,posDeltaY,posDeltaZ,velocity_rejection_count,velocity_buffer_reset_count,"
+      "vcRawX,vcRawY,vcRawZ,vcX,vcY,vcZ,"
+      "rotOffsetVelX,rotOffsetVelY,rotOffsetVelZ,"
+      "velDesX,velDesY,velDesZ,gyroX,gyroY,gyroZ\n"; csv_.flush();
   }
-  void gyroBodyCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    copy3(msg, gyro_body_deg_s_);
-  }
-  void accNormalCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 6) {
-      acc_[0] = msg->values[0];
-      acc_[1] = msg->values[1];
-      acc_[2] = msg->values[2];
-      normal_est_[0] = msg->values[3];
-      normal_est_[1] = msg->values[4];
-      normal_est_[2] = msg->values[5];
-    }
-  }
-  void normalDebugCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 6) {
-      normal_preproj_[0] = msg->values[0];
-      normal_preproj_[1] = msg->values[1];
-      normal_preproj_[2] = msg->values[2];
-      normal_postproj_[0] = msg->values[3];
-      normal_postproj_[1] = msg->values[4];
-      normal_postproj_[2] = msg->values[5];
-    }
-  }
-  void mobRawCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 3) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        raw_mob_force_[i] = msg->values[i];
-      }
-    }
-  }
-  void forceBarCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 4) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        force_bar_[i] = msg->values[i];
-      }
-      eta_hat_ = msg->values[3];
-    }
-  }
-  void contactForceCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 3) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        contact_force_[i] = msg->values[i];
-      }
-    }
-  }
-  void normalMetricsCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 5) {
-      ee_vel_used_[0] = msg->values[0];
-      ee_vel_used_[1] = msg->values[1];
-      ee_vel_used_[2] = msg->values[2];
-      omega_n_ = msg->values[3];
-      normal_velocity_leakage_ = msg->values[4];
-    }
-  }
-  void stabilizerTimingCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 2) {
-      stabilizer_loop_dt_us_ = msg->values[0];
-      stabilizer_loop_dt_us_max_ = msg->values[1];
-    }
-  }
-  void alphaFrameCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 3) {
-      alpha_frame_ = msg->values[0];
-      t1_cmd_des_ = msg->values[1];
-      t2_cmd_des_ = msg->values[2];
-    }
-  }
-  void imuRawPairCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 6) {
-      acc_raw_body_[0] = msg->values[0];
-      acc_raw_body_[1] = msg->values[1];
-      acc_raw_body_[2] = msg->values[2];
-      acc_body_[0] = msg->values[3];
-      acc_body_[1] = msg->values[4];
-      acc_body_[2] = msg->values[5];
-    }
-  }
-  void velAttDesCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 3) {
-      vel_des_[0] = msg->values[0];
-      vel_des_[1] = msg->values[1];
-      vel_des_[2] = msg->values[2];
-    }
-    if (msg->values.size() >= 6) {
-      att_des_[0] = msg->values[3];
-      att_des_[1] = msg->values[4];
-      att_des_[2] = msg->values[5];
-    }
-  }
-  void velocityModulationCallback(
-    const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 5) {
-      n_hat_dot_[0] = msg->values[0];
-      n_hat_dot_[1] = msg->values[1];
-      n_hat_dot_[2] = msg->values[2];
-      kappa_hat_ = msg->values[3];
-      alpha_star_ = msg->values[4];
-    }
-  }
-  void velocityModulationContactVelocityCallback(
-    const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 3) {
-      curvature_contact_velocity_[0] = msg->values[0];
-      curvature_contact_velocity_[1] = msg->values[1];
-      curvature_contact_velocity_[2] = msg->values[2];
-    }
-  }
-  void cmdPositionCallback(const crazyflie_interfaces::msg::Position::SharedPtr msg)
-  {
-    cmd_xyzyaw_[0] = msg->x;
-    cmd_xyzyaw_[1] = msg->y;
-    cmd_xyzyaw_[2] = msg->z;
-    cmd_xyzyaw_[3] = msg->yaw;
-  }
-  void cmdPositionControlCallback(const crazyflie_interfaces::msg::PositionControl::SharedPtr msg)
-  {
-    force_desired_ = msg->force_desired;
-  }
-  void statusCallback(const crazyflie_interfaces::msg::Status::SharedPtr msg)
-  {
-    status_batt_v_ = msg->battery_voltage;
-  }
-  void ctrlMiscCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
-  {
-    if (msg->values.size() >= 4) {
-      pm_vbat_ = msg->values[0];
-      fw_cmd_xyz_[0] = msg->values[1];
-      fw_cmd_xyz_[1] = msg->values[2];
-      fw_cmd_xyz_[2] = msg->values[3];
-    }
-  }
-
-  void filenameTagCallback(const std_msgs::msg::String::SharedPtr msg)
-  {
-    if (!msg || msg->data.empty() || csv_path_.empty()) {
-      return;
-    }
-
-    const std::filesystem::path current_path(csv_path_);
-    const std::filesystem::path parent_dir = current_path.parent_path();
-    const std::string sanitized_tag = sanitize_filename_component_debug(msg->data);
-    if (sanitized_tag.empty()) {
-      RCLCPP_WARN(get_logger(), "Ignoring empty debug log filename tag");
-      return;
-    }
-
-    const std::string base_name = current_path.filename().string();
-    const std::string suffix = "_debug";
-    const std::size_t suffix_pos = base_name.find(suffix);
-    const std::string prefix =
-      (suffix_pos == std::string::npos) ? now_mmddhhmm_debug() : base_name.substr(0, suffix_pos);
-    const std::filesystem::path new_path =
-      parent_dir / (prefix + "_debug_" + sanitized_tag + ".csv");
-
-    if (new_path == current_path) {
-      return;
-    }
-
-    if (csv_.is_open()) {
-      csv_.flush();
-      csv_.close();
-    }
-
-    std::error_code ec;
-    std::filesystem::rename(current_path, new_path, ec);
-    if (ec) {
-      RCLCPP_WARN(
-        get_logger(),
-        "Failed to rename debug CSV from %s to %s: %s",
-        current_path.string().c_str(),
-        new_path.string().c_str(),
-        ec.message().c_str());
-      csv_.open(csv_path_, std::ios::out | std::ios::app);
-      return;
-    }
-
-    csv_path_ = new_path.string();
-    csv_.open(csv_path_, std::ios::out | std::ios::app);
-    if (!csv_.is_open()) {
-      RCLCPP_ERROR(get_logger(), "Failed to reopen renamed CSV file: %s", csv_path_.c_str());
-      return;
-    }
-
-    RCLCPP_INFO(get_logger(), "Debug CSV renamed to: %s", csv_path_.c_str());
-  }
-
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr data_pub_;
-
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_pose_;
-  rclcpp::Subscription<motion_capture_tracking_interfaces::msg::NamedPoseArray>::SharedPtr sub_named_poses_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::Position>::SharedPtr sub_cmd_position_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::PositionControl>::SharedPtr sub_cmd_position_control_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_ctrl_misc_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::Status>::SharedPtr sub_status_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_motor_thrust_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_motor_pwm_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_body_force_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_world_force_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_body_torque_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_vel_pair_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_gyro_body_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_acc_normal_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_normal_debug_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_mob_raw_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_force_bar_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_contact_force_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_normal_metrics_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_stabilizer_timing_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_alpha_frame_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_imu_raw_pair_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_vel_att_des_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_velocity_modulation_;
-  rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr sub_velocity_modulation_v_c_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_filename_tag_;
-
-  std::string csv_dir_;
-  std::string csv_path_;
-  std::ofstream csv_;
-  uint64_t csv_line_count_{0};
-
-  std::string publish_topic_;
-  std::string cf_ns_;
-  double loop_hz_{50.0};
-
-  std::array<double, 3> pose_xyz_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> pose_rpy_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 4> cmd_xyzyaw_ = {qnan_debug(), qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> fw_cmd_xyz_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 4> motor_thrust_ = {qnan_debug(), qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 4> motor_pwm_ = {qnan_debug(), qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> body_force_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> world_force_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> body_torque_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> state_vel_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> pos_vel_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> gyro_body_deg_s_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> acc_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> acc_raw_body_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> acc_body_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> vel_des_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> att_des_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  double status_batt_v_ = qnan_debug();
-  double pm_vbat_ = qnan_debug();
-  double zero_bias_count_ = qnan_debug();
-  std::array<double, 3> mob_force_none_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> mob_force_residual_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> mob_force_final_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> mob_torque_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> mob_residual_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> normal_preproj_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> normal_postproj_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> normal_est_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  double thrust_eff_eta_hat_ = qnan_debug();
-  std::array<double, 3> thrust_eff_match_force_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> thrust_eff_residual_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> legacy_force_bar_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> raw_mob_force_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> raw_mob_torque_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> force_bar_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> contact_force_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  double eta_hat_ = qnan_debug();
-  std::array<double, 3> ee_vel_used_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  double omega_n_ = qnan_debug();
-  double normal_velocity_leakage_ = qnan_debug();
-  double stabilizer_loop_dt_us_ = qnan_debug();
-  double stabilizer_loop_dt_us_max_ = qnan_debug();
-  double alpha_frame_ = qnan_debug();
-  double t1_cmd_des_ = qnan_debug();
-  double t2_cmd_des_ = qnan_debug();
-  double force_desired_ = qnan_debug();
-  std::array<double, 3> n_hat_dot_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  double kappa_hat_ = qnan_debug();
-  double alpha_star_ = qnan_debug();
-  std::array<double, 3> curvature_contact_velocity_ = {
-    qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 3> wall_xyz_ = {qnan_debug(), qnan_debug(), qnan_debug()};
-  std::array<double, 4> wall_quat_xyzw_ = {
-    qnan_debug(), qnan_debug(), qnan_debug(), qnan_debug()};
+  std::string csv_dir_, csv_path_, cf_ns_, robot_name_; std::ofstream csv_;
+  double loop_hz_{50.0}, last_flush_sec_{0.0}; Clock::time_point start_, last_row_;
+  double mocap_count_{0.0}; bool mocap_received_{false};
+  double mocap_dt_ms_{nanv()}, mocap_source_time_{nanv()}, mocap_source_age_ms_{nanv()};
+  std::array<double,3> mocap_xyz_{nanv(),nanv(),nanv()}, ext_xyz_{nanv(),nanv(),nanv()}, loop_{nanv(),nanv(),nanv()}, contact_offset_velocity_{nanv(),nanv(),nanv()}, command_{nanv(),nanv(),nanv()}, gyro_{nanv(),nanv(),nanv()};
+  std::array<double,5> ext_timing_{nanv(),nanv(),nanv(),nanv(),nanv()}, pos_events_{nanv(),nanv(),nanv(),nanv(),nanv()};
+  std::array<double,6> kalman_{nanv(),nanv(),nanv(),nanv(),nanv(),nanv()};
+  std::array<double,6> state_{nanv(),nanv(),nanv(),nanv(),nanv(),nanv()}, pos_velocity_{nanv(),nanv(),nanv(),nanv(),nanv(),nanv()}, contact_velocity_{nanv(),nanv(),nanv(),nanv(),nanv(),nanv()};
+  std::map<std::string,bool> received_; std::vector<rclcpp::Subscription<LogMsg>::SharedPtr> subscriptions_;
+  rclcpp::Subscription<PosesMsg>::SharedPtr poses_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr mocap_debug_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tag_sub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher_; rclcpp::TimerBase::SharedPtr startup_timer_;
 };
 
-int main(int argc, char * argv[])
-{
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<DataLoggingDebugNode>();
-  rclcpp::Rate rate(node->loop_hz());
-
-  while (rclcpp::ok()) {
-    rclcpp::spin_some(node);
-    node->loopOnce();
-    rate.sleep();
-  }
-
-  rclcpp::shutdown();
-  return 0;
+int main(int argc, char ** argv) {
+  rclcpp::init(argc, argv); auto node = std::make_shared<VelocityDebugLogger>(); rclcpp::Rate rate(node->loop_hz());
+  while (rclcpp::ok()) { rclcpp::spin_some(node); node->write_row(); rate.sleep(); } rclcpp::shutdown(); return 0;
 }

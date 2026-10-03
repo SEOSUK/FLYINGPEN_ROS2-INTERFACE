@@ -9,7 +9,7 @@ data_logging:
     publish_topic: "/data_logging_msg"
     cf_ns: "/cf2"
     loop_hz: 100.0
-    stale_warn_sec: 0.5
+    stale_warn_sec: 2.0
     stale_fail_sec: 2.0
 
 data_logging_debug:
