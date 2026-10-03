@@ -1,27 +1,22 @@
-from collections import deque
 import math
+import os
 from pathlib import Path
+import tempfile
 import rclpy
 from rclpy.node import Node
-from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-from rcl_interfaces.srv import SetParameters
+from crazyflie_interfaces.msg import LogDataGeneric
 from std_msgs.msg import Float64MultiArray, String
-import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from crazyflie_py import Crazyswarm
 
 
-HOVER_GRAVITY = 9.81
-HOVER_CALIBRATION_WINDOW_SEC = 2.0
-HOVER_BUFFER_KEEP_SEC = 3.0
-HOVER_MIN_SAMPLES = 20
-# Canonical 51-column force-control schema from flying_pen/data_logging.cpp.
-MOB_INPUT_TORQUE_INDEX_RANGE = range(36, 39)
-MOTOR_THRUST_INDEX_RANGE = range(39, 43)
-FORCE_CONTROL_COLUMN_COUNT = 51
-HOVER_TRIGGER_RETRY_PERIOD_SEC = 1.0
-HOVER_TRIGGER_RETRY_COUNT = 1
+CALIB_IDLE = 0
+CALIB_IMU_TRIM = 1
+CALIB_COM_COLLECT = 2
+CALIB_DONE = 3
+CALIB_ERROR = 4
+CALIBRATION_TIMEOUT_SEC = 70.0
 DISARM_RETRY_PERIOD_SEC = 0.1
 DISARM_RETRY_COUNT = 20
 
@@ -41,28 +36,30 @@ class SuInterface(Node):
             10
         )
         self.debug_subscription = self.create_subscription(
-            Float64MultiArray,
-            '/data_logging_msg',
-            self.debug_callback,
-            50
+            LogDataGeneric,
+            '/cf2/cf_calibration',
+            self.calibration_status_callback,
+            10,
         )
         self.calibration_publisher = self.create_publisher(
             Float64MultiArray,
             'cf2/hover_calibration',
             10,
         )
-        self.param_client = self.create_client(SetParameters, '/crazyflie_server/set_parameters')
-        self.hover_samples = deque()
-        self.latest_hover_calibration = None
-        self.pending_hover_calibration_repeats = 0
+        self.calibration_result_publisher = self.create_publisher(
+            String,
+            'calibration_status',
+            10,
+        )
         self.disarm_retry_timer = None
         self.pending_disarm_repeats = 0
         self.su_params_path = Path(get_package_share_directory('crazyflie')) / 'config' / 'su_params.yaml'
-        self.current_mass, self.current_com_off_x, self.current_com_off_y = self._load_current_hover_calibration()
-        self.hover_calibration_retry_timer = self.create_timer(
-            HOVER_TRIGGER_RETRY_PERIOD_SEC,
-            self.retry_hover_calibration_trigger,
-        )
+        self.calibration_active = False
+        self.calibration_start_time = None
+        self.calibration_run_id = None
+        self.last_firmware_run_id = 0
+        self.completed_run_ids = set()
+        self.calibration_watchdog_timer = self.create_timer(0.5, self.calibration_watchdog)
         self.get_logger().info('su_interface node ready.')
 
     def keyboard_callback(self, msg):
@@ -78,169 +75,116 @@ class SuInterface(Node):
         elif input_char == 'f':
             self.trigger_hover_calibration()
 
-    def debug_callback(self, msg):
-        if len(msg.data) != FORCE_CONTROL_COLUMN_COUNT:
-            return
-
-        motor_thrust = [msg.data[i] for i in MOTOR_THRUST_INDEX_RANGE]
-        body_torque = [msg.data[i] for i in MOB_INPUT_TORQUE_INDEX_RANGE]
-        if not all(math.isfinite(value) for value in motor_thrust + body_torque):
-            return
-
-        sample = {
-            'time': self.get_clock().now().nanoseconds * 1e-9,
-            'hover_thrust': sum(motor_thrust),
-            'tau_x': body_torque[0],
-            'tau_y': body_torque[1],
-        }
-        self.hover_samples.append(sample)
-        self._trim_hover_samples(sample['time'])
-
-    def _trim_hover_samples(self, now_sec):
-        cutoff_sec = now_sec - HOVER_BUFFER_KEEP_SEC
-        while self.hover_samples and self.hover_samples[0]['time'] < cutoff_sec:
-            self.hover_samples.popleft()
-
-    def _load_current_hover_calibration(self):
-        try:
-            with self.su_params_path.open('r', encoding='utf-8') as f:
-                data = yaml.safe_load(f) or {}
-        except Exception as exc:
-            self.get_logger().warning(
-                f'Failed to read current hover calibration from {self.su_params_path}: {exc}'
-            )
-            return (float('nan'), 0.0, 0.0)
-
-        su_wrench = (
-            data.get('robot_types', {})
-            .get('cf21', {})
-            .get('firmware_params', {})
-            .get('su_wrench', {})
-        )
-        mass = float(su_wrench.get('mass', float('nan')))
-        com_off_x = float(su_wrench.get('comOffX', 0.0))
-        com_off_y = float(su_wrench.get('comOffY', 0.0))
-        return (mass, com_off_x, com_off_y)
-
     def trigger_hover_calibration(self):
-        now_sec = self.get_clock().now().nanoseconds * 1e-9
-        self._trim_hover_samples(now_sec)
-        window_start_sec = now_sec - HOVER_CALIBRATION_WINDOW_SEC
-        samples = [sample for sample in self.hover_samples if sample['time'] >= window_start_sec]
-
-        if len(samples) < HOVER_MIN_SAMPLES:
-            self.get_logger().warning(
-                'HOVER CALIBRATION skipped: only %d samples in the last %.1f s on /data_logging_msg'
-                % (len(samples), HOVER_CALIBRATION_WINDOW_SEC)
-            )
+        if self.calibration_active:
+            self.get_logger().warning('Calibration already running; duplicate f ignored.')
             return
-
-        hover_thrust = sum(sample['hover_thrust'] for sample in samples) / len(samples)
-        tau_x = sum(sample['tau_x'] for sample in samples) / len(samples)
-        tau_y = sum(sample['tau_y'] for sample in samples) / len(samples)
-
-        if not math.isfinite(hover_thrust) or hover_thrust <= 1e-6:
-            self.get_logger().warning(
-                'HOVER CALIBRATION skipped: invalid hover thrust %.6f N' % hover_thrust
-            )
-            return
-
-        self.current_mass, self.current_com_off_x, self.current_com_off_y = self._load_current_hover_calibration()
-        current_mass = self.current_mass
-        current_com_off_x = self.current_com_off_x
-        current_com_off_y = self.current_com_off_y
-
-        measured_mass = hover_thrust / HOVER_GRAVITY
-        # Hover calibration updates only the CoM offsets. Keep the mass loaded
-        # from su_params.yaml instead of replacing it with the hover estimate.
-        mass = current_mass
-        # tau_input already includes the currently configured CoM compensation term.
-        # In hover, the remaining body-torque mismatch corresponds to the error
-        # between the current CoM estimate and the true CoM offset.
-        delta_com_x = -tau_y / hover_thrust
-        delta_com_y = tau_x / hover_thrust
-        com_off_x = current_com_off_x - delta_com_x
-        com_off_y = current_com_off_y - delta_com_y
-
-        if not all(math.isfinite(value) for value in (mass, com_off_x, com_off_y)):
-            self.get_logger().warning(
-                'HOVER CALIBRATION skipped: invalid estimate mass=%.6f, comOffX=%.6f, comOffY=%.6f'
-                % (mass, com_off_x, com_off_y)
-            )
-            return
-
-        calibration = {
-            'mass': mass,
-            'com_off_x': com_off_x,
-            'com_off_y': com_off_y,
-            'hover_thrust': hover_thrust,
-            'tau_x': tau_x,
-            'tau_y': tau_y,
-            'delta_com_x': delta_com_x,
-            'delta_com_y': delta_com_y,
-            'sample_count': len(samples),
-        }
-        self.latest_hover_calibration = calibration
-        self.current_mass = mass
-        self.current_com_off_x = com_off_x
-        self.current_com_off_y = com_off_y
-        self.pending_hover_calibration_repeats = max(0, HOVER_TRIGGER_RETRY_COUNT - 1)
-
-        self.send_hover_calibration_trigger(calibration, log_request=True)
-        self.get_logger().info(
-            'HOVER CALIBRATION local result: samples=%d, thrust=%.4f N, tau_input=(%.5f, %.5f) N*m, '
-            'configured mass=%.4f kg, hover-estimated mass=%.4f kg, '
-            'current comOffXY=(%.5f, %.5f) m, delta comOffXY=(%.5f, %.5f) m, '
-            'new comOffXY=(%.5f, %.5f) m'
-            % (
-                calibration['sample_count'],
-                calibration['hover_thrust'],
-                calibration['tau_x'],
-                calibration['tau_y'],
-                calibration['mass'],
-                measured_mass,
-                current_com_off_x,
-                current_com_off_y,
-                calibration['delta_com_x'],
-                calibration['delta_com_y'],
-                calibration['com_off_x'],
-                calibration['com_off_y'],
-            )
-        )
-
-    def send_hover_calibration_trigger(self, calibration, *, log_request):
         msg = Float64MultiArray()
-        msg.data = [
-            calibration['mass'],
-            calibration['com_off_x'],
-            calibration['com_off_y'],
-        ]
+        msg.data = [1.0]
         self.calibration_publisher.publish(msg)
-        if log_request:
-            self.get_logger().info(
-                'HOVER CALIBRATION trigger published to cf2/hover_calibration: samples=%d, '
-                'mass=%.4f kg, comOffXY=(%.5f, %.5f) m'
-                % (
-                    calibration['sample_count'],
-                    calibration['mass'],
-                    calibration['com_off_x'],
-                    calibration['com_off_y'],
-                )
-            )
+        self.calibration_active = True
+        self.calibration_start_time = self.get_clock().now()
+        self.calibration_run_id = None
+        self.get_logger().info('Firmware calibration start trigger sent once.')
 
-    def retry_hover_calibration_trigger(self):
-        calibration = self.latest_hover_calibration
-        if calibration is None or self.pending_hover_calibration_repeats <= 0:
+    def calibration_status_callback(self, msg):
+        if len(msg.values) != 6:
             return
+        state = int(round(msg.values[0]))
+        run_id = int(round(msg.values[1]))
+        self.last_firmware_run_id = run_id
+        if not self.calibration_active:
+            return
+        if state in (CALIB_IMU_TRIM, CALIB_COM_COLLECT):
+            if self.calibration_run_id is None:
+                self.calibration_run_id = run_id
+            return
+        if self.calibration_run_id is None or run_id != self.calibration_run_id:
+            return
+        if state == CALIB_ERROR:
+            self.calibration_active = False
+            self.get_logger().error('Firmware calibration failed.')
+            return
+        if state != CALIB_DONE or run_id in self.completed_run_ids:
+            return
+        values = [float(value) for value in msg.values[2:6]]
+        if not all(math.isfinite(value) for value in values):
+            self.calibration_active = False
+            self.get_logger().error('Calibration result contains NaN or Inf; YAML not updated.')
+            return
+        try:
+            self._persist_calibration(values[0], values[1], values[2], values[3])
+        except Exception as exc:
+            self.calibration_active = False
+            self.get_logger().error(f'Calibration YAML update failed: {exc}')
+            return
+        self.completed_run_ids.add(run_id)
+        self.calibration_active = False
+        result_msg = String()
+        result_msg.data = '[calibration done]'
+        self.calibration_result_publisher.publish(result_msg)
+        print('[calibration done]', flush=True)
 
-        self.send_hover_calibration_trigger(calibration, log_request=False)
-        self.pending_hover_calibration_repeats -= 1
+    def calibration_watchdog(self):
+        if not self.calibration_active or self.calibration_start_time is None:
+            return
+        elapsed = (self.get_clock().now() - self.calibration_start_time).nanoseconds * 1e-9
+        if elapsed > CALIBRATION_TIMEOUT_SEC:
+            self.calibration_active = False
+            self.get_logger().error('Firmware calibration timed out; YAML not updated.')
+
+    def _persist_calibration(self, acc_roll, acc_pitch, com_x, com_y):
+        path = self.su_params_path.resolve()
+        lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+        replacements = {
+            ('su_wrench', 'comOffX'): com_x,
+            ('su_wrench', 'comOffY'): com_y,
+            ('imu_sensors', 'accTrimRoll'): acc_roll,
+            ('imu_sensors', 'accTrimPitch'): acc_pitch,
+        }
+        found = set()
+        section = None
+        for index, line in enumerate(lines):
+            stripped = line.lstrip(' ')
+            indent = len(line) - len(stripped)
+            if indent == 6 and stripped.rstrip().endswith(':'):
+                section = stripped.strip()[:-1]
+                continue
+            if indent <= 6 and stripped.strip() and not stripped.lstrip().startswith('#'):
+                section = None
+            if section not in ('su_wrench', 'imu_sensors') or indent != 8 or ':' not in stripped:
+                continue
+            key = stripped.split(':', 1)[0].strip()
+            lookup = (section, key)
+            if lookup not in replacements:
+                continue
+            newline = '\n' if line.endswith('\n') else ''
+            body = line[:-1] if newline else line
+            comment = ''
+            if '#' in body:
+                comment = '  #' + body.split('#', 1)[1]
+            lines[index] = ' ' * 8 + f'{key}: {replacements[lookup]:.6f}' + comment + newline
+            found.add(lookup)
+        if found != set(replacements):
+            missing = sorted(set(replacements) - found)
+            raise RuntimeError(f'missing YAML calibration keys: {missing}')
+        fd, temporary_name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as output:
+                output.writelines(lines)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary_name, path)
+        except Exception:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+            raise
 
     def request_disarm(self):
         # Disarm has priority over calibration retries. Do not keep sending
         # hover-calibration app-channel packets after the operator presses p.
-        self.pending_hover_calibration_repeats = 0
-        self.latest_hover_calibration = None
         # Send the safety-critical arming-off request first. The setpoint-stop
         # notification is useful, but disarming must not wait behind it.
         self.cf.arm(False)

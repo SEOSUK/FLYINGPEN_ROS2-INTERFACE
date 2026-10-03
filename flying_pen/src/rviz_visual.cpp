@@ -34,7 +34,7 @@ constexpr std::size_t kRawMobDataSize = kRawMobForceIndex + 3;
 constexpr std::size_t kContactForceDataSize = kContactForceIndex + 3;
 constexpr std::size_t kForceBarDataSize = kForceBarIndex + 3;
 constexpr std::size_t kVelocityDebugDataSize = 58;
-constexpr std::size_t kForceControlDataSize = 51;
+constexpr std::size_t kForceControlDataSize = 54;
 constexpr std::size_t kVcLpfIndex = 46;
 constexpr double kForceArrowScale = 10.0;
 

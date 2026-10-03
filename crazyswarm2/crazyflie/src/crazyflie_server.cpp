@@ -1,13 +1,8 @@
 #include <memory>
 #include <vector>
 #include <regex>
-#include <fstream>
-#include <filesystem>
-#include <sstream>
-#include <iomanip>
 #include <crazyflie_cpp/Crazyflie.h>
 
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include "std_srvs/srv/empty.hpp"
@@ -56,24 +51,6 @@ constexpr uint8_t kHoverCalibrationTriggerMagic = 0xA6;
 constexpr uint8_t kHoverCalibrationTriggerVersion = 0x01;
 constexpr int64_t kDiagnosticWarningThrottleMs = 5000;
 
-std::string replace_yaml_scalar_line(const std::string& line, double value)
-{
-  static const std::regex line_re(R"(^(\s*[^:]+:\s*)([^#\n]*)(.*)$)");
-  std::smatch match;
-  if (!std::regex_match(line, match, line_re)) {
-    throw std::runtime_error("Could not parse YAML line: " + line);
-  }
-
-  std::ostringstream value_stream;
-  value_stream << std::fixed << std::setprecision(6) << value;
-
-  std::string suffix = match[3].str();
-  if (!suffix.empty() && suffix.front() == '#') {
-    suffix = "  " + suffix;
-  }
-
-  return match[1].str() + value_stream.str() + suffix;
-}
 }
 
 #ifdef ROS_DISTRO_HUMBLE
@@ -216,9 +193,6 @@ public:
     subscription_cmd_position_control_ = node->create_subscription<crazyflie_interfaces::msg::PositionControl>(name + "/cmd_position_control", rclcpp::SystemDefaultsQoS(), std::bind(&CrazyflieROS::cmd_position_control_changed, this, _1), sub_opt_cf_cmd);
     subscription_hover_calibration_ = node->create_subscription<std_msgs::msg::Float64MultiArray>(name + "/hover_calibration", rclcpp::SystemDefaultsQoS(), std::bind(&CrazyflieROS::hover_calibration_changed, this, _1), sub_opt_cf_cmd);
     subscription_cmd_velocity_world_ = node->create_subscription<crazyflie_interfaces::msg::VelocityWorld>(name + "/cmd_velocity_world", rclcpp::SystemDefaultsQoS(), std::bind(&CrazyflieROS::cmd_velocity_world_changed, this, _1), sub_opt_cf_cmd);
-    publisher_debug_log_filename_tag_ = node->create_publisher<std_msgs::msg::String>(
-      "/flying_pen/debug_log_filename_tag", 10);
-
     publisher_robot_description_ = node->create_publisher<std_msgs::msg::String>(name + "/robot_description",
       rclcpp::QoS(1).transient_local());
     {
@@ -387,17 +361,6 @@ public:
       update_map(set_param_map, "robot_types." + cf_type + ".firmware_params");
       // check robots/<robot_name>/firmware_params
       update_map(set_param_map, "robots." + name_ + ".firmware_params");
-
-      const auto configured_mass = set_param_map.find("su_wrench.mass");
-      if (configured_mass != set_param_map.end()) {
-        if (configured_mass->second.get_type() == rclcpp::PARAMETER_DOUBLE) {
-          hover_calibration_mass_ = configured_mass->second.get<double>();
-          has_hover_calibration_mass_ = true;
-        } else if (configured_mass->second.get_type() == rclcpp::PARAMETER_INTEGER) {
-          hover_calibration_mass_ = static_cast<double>(configured_mass->second.get<int64_t>());
-          has_hover_calibration_mass_ = true;
-        }
-      }
 
       // Update parameters
       for (const auto&i : set_param_map) {
@@ -712,239 +675,22 @@ private:
 
   void hover_calibration_changed(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
-    if (!msg || msg->data.size() < 3) {
-      RCLCPP_WARN(logger_, "[%s] hover_calibration ignored: expected [mass, comOffX, comOffY]", name_.c_str());
+    if (!msg) {
       return;
     }
-    if (!has_hover_calibration_mass_ || hover_calibration_mass_ <= 0.0) {
-      RCLCPP_ERROR(
-        logger_,
-        "[%s] hover_calibration ignored: no valid su_wrench.mass was loaded from configuration",
-        name_.c_str());
-      return;
-    }
-
-    const double mass = hover_calibration_mass_;
-    const double com_off_x = msg->data[1];
-    const double com_off_y = msg->data[2];
 
     const struct __attribute__((packed)) {
       uint8_t magic;
       uint8_t version;
-      float mass;
-      float com_off_x;
-      float com_off_y;
     } payload = {
       kHoverCalibrationTriggerMagic,
       kHoverCalibrationTriggerVersion,
-      static_cast<float>(mass),
-      static_cast<float>(com_off_x),
-      static_cast<float>(com_off_y),
     };
 
     cf_.sendAppChannelPacket(reinterpret_cast<const uint8_t*>(&payload), sizeof(payload));
-
-    publish_debug_log_filename_tag(mass, com_off_x, com_off_y);
-    persist_hover_calibration_to_yaml(com_off_x, com_off_y);
-    RCLCPP_INFO(
-      logger_,
-      "[%s] hover_calibration forwarded to firmware: configured mass=%.4f kg, comOffXY=(%.5f, %.5f) m",
-      name_.c_str(),
-      mass,
-      com_off_x,
-      com_off_y);
+    RCLCPP_INFO(logger_, "[%s] firmware calibration start requested", name_.c_str());
   }
 
-  void publish_debug_log_filename_tag(double mass, double com_off_x, double com_off_y)
-  {
-    if (!publisher_debug_log_filename_tag_) {
-      return;
-    }
-
-    std::ostringstream tag_stream;
-    tag_stream << std::fixed << std::setprecision(3)
-               << "mass" << mass
-               << "_com" << com_off_x
-               << "_" << com_off_y;
-
-    std_msgs::msg::String tag_msg;
-    tag_msg.data = tag_stream.str();
-    publisher_debug_log_filename_tag_->publish(tag_msg);
-
-    RCLCPP_INFO(
-      logger_,
-      "[%s] published debug log filename tag: %s",
-      name_.c_str(),
-      tag_msg.data.c_str());
-  }
-
-  std::vector<std::filesystem::path> resolve_su_params_paths() const
-  {
-    std::vector<std::filesystem::path> paths;
-    try {
-      const auto share_dir = ament_index_cpp::get_package_share_directory("crazyflie");
-      paths.emplace_back(std::filesystem::path(share_dir) / "config" / "su_params.yaml");
-    } catch (const std::exception& e) {
-      RCLCPP_WARN(logger_, "[%s] Could not resolve crazyflie share su_params.yaml: %s", name_.c_str(), e.what());
-    }
-
-    const char* home = std::getenv("HOME");
-    if (home) {
-      paths.emplace_back(
-        std::filesystem::path(home) / "hitl_ws" / "src" / "crazyswarm2" / "crazyflie" / "config" / "su_params.yaml");
-    }
-
-    std::vector<std::filesystem::path> deduped;
-    for (const auto& path : paths) {
-      const auto duplicate =
-        std::find(deduped.begin(), deduped.end(), path) != deduped.end();
-      if (!duplicate) {
-        deduped.push_back(path);
-      }
-    }
-    return deduped;
-  }
-
-  bool update_su_params_file(
-    const std::filesystem::path& path,
-    double com_off_x,
-    double com_off_y) const
-  {
-    if (!std::filesystem::exists(path)) {
-      throw std::runtime_error("file does not exist");
-    }
-
-    std::ifstream in(path);
-    if (!in.is_open()) {
-      throw std::runtime_error("failed to open file for reading");
-    }
-
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line)) {
-      lines.push_back(line);
-    }
-    in.close();
-
-    bool in_cf21 = false;
-    bool in_firmware_params = false;
-    bool in_su_wrench = false;
-    bool found_com_x = false;
-    bool found_com_y = false;
-
-    for (auto& current_line : lines) {
-      std::string stripped = current_line;
-      stripped.erase(0, stripped.find_first_not_of(' '));
-      const size_t indent = current_line.size() - stripped.size();
-
-      if (indent == 2 && stripped == "cf21:") {
-        in_cf21 = true;
-        in_firmware_params = false;
-        in_su_wrench = false;
-        continue;
-      }
-
-      if (in_cf21 && indent <= 2 && !stripped.empty() && stripped.back() == ':' && stripped != "cf21:") {
-        in_cf21 = false;
-        in_firmware_params = false;
-        in_su_wrench = false;
-      }
-
-      if (in_cf21 && indent == 4 && stripped == "firmware_params:") {
-        in_firmware_params = true;
-        in_su_wrench = false;
-        continue;
-      }
-
-      if (in_firmware_params && indent <= 4 && !stripped.empty() && stripped.back() == ':' && stripped != "firmware_params:") {
-        in_firmware_params = false;
-        in_su_wrench = false;
-      }
-
-      if (in_firmware_params && indent == 6 && stripped == "su_wrench:") {
-        in_su_wrench = true;
-        continue;
-      }
-
-      if (in_su_wrench && indent <= 6 && !stripped.empty() && stripped.back() == ':' && stripped != "su_wrench:") {
-        in_su_wrench = false;
-      }
-
-      if (!in_su_wrench) {
-        continue;
-      }
-
-      if (indent == 8 && stripped.rfind("comOffX:", 0) == 0) {
-        current_line = replace_yaml_scalar_line(current_line, com_off_x);
-        found_com_x = true;
-      } else if (indent == 8 && stripped.rfind("comOffY:", 0) == 0) {
-        current_line = replace_yaml_scalar_line(current_line, com_off_y);
-        found_com_y = true;
-      }
-    }
-
-    if (!(found_com_x && found_com_y)) {
-      return false;
-    }
-
-    std::ofstream out(path, std::ios::out | std::ios::trunc);
-    if (!out.is_open()) {
-      throw std::runtime_error("failed to open file for writing");
-    }
-
-    for (const auto& updated_line : lines) {
-      out << updated_line << "\n";
-    }
-    return true;
-  }
-
-  void persist_hover_calibration_to_yaml(double com_off_x, double com_off_y)
-  {
-    std::vector<std::string> updated_paths;
-    std::vector<std::string> failed_paths;
-
-    for (const auto& path : resolve_su_params_paths()) {
-      try {
-        if (update_su_params_file(path, com_off_x, com_off_y)) {
-          updated_paths.push_back(path.string());
-        } else {
-          failed_paths.push_back(path.string() + " (keys not found)");
-        }
-      } catch (const std::exception& e) {
-        failed_paths.push_back(path.string() + " (" + e.what() + ")");
-      }
-    }
-
-    if (!updated_paths.empty()) {
-      std::ostringstream oss;
-      for (size_t i = 0; i < updated_paths.size(); ++i) {
-        if (i > 0) {
-          oss << " | ";
-        }
-        oss << updated_paths[i];
-      }
-      RCLCPP_INFO(
-        logger_,
-        "[%s] persisted hover com offsets to su_params.yaml: %s",
-        name_.c_str(),
-        oss.str().c_str());
-    }
-
-    if (!failed_paths.empty()) {
-      std::ostringstream oss;
-      for (size_t i = 0; i < failed_paths.size(); ++i) {
-        if (i > 0) {
-          oss << " | ";
-        }
-        oss << failed_paths[i];
-      }
-      RCLCPP_WARN(
-        logger_,
-        "[%s] failed to persist some hover com offset updates: %s",
-        name_.c_str(),
-        oss.str().c_str());
-    }
-  }
 
   void cmd_hover_changed(const crazyflie_interfaces::msg::Hover::SharedPtr msg)
   {
@@ -1302,8 +1048,6 @@ private:
   Crazyflie cf_;
   std::string message_buffer_;
   std::string name_;
-  double hover_calibration_mass_{0.0};
-  bool has_hover_calibration_mass_{false};
 
   rclcpp::Node* node_;
   tf2_ros::TransformBroadcaster tf_broadcaster_;
@@ -1326,7 +1070,6 @@ private:
   rclcpp::Subscription<crazyflie_interfaces::msg::VelocityWorld>::SharedPtr subscription_cmd_velocity_world_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_robot_description_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_debug_log_filename_tag_;
 
   // logging
   std::string reference_frame_;

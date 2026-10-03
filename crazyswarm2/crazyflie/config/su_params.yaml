@@ -3,12 +3,15 @@ robot_types:
     firmware_params:
       su_wrench:
         mass: 0.045000  # observer mass model [kg]
-        comOffX: -0.000204  # body-frame CoM offset x [m]
-        comOffY: -0.000001  # body-frame CoM offset y [m]
+        comOffX: -0.000262  # body-frame CoM offset x [m]
+        comOffY: -0.000240  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
         rOffX: 0.085
         rOffY: 0.0
         rOffZ: 0.020
+      imu_sensors:
+        accTrimRoll: 0.037158
+        accTrimPitch: -0.339898
 
       su_position:
         preloadEn: 1  # 0: velocity-mode yaw follows server command, 1: velocity-mode yaw aligns to estimated normal direction

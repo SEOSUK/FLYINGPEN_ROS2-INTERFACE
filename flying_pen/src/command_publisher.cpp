@@ -42,6 +42,10 @@ public:
     key_pub_ = this->create_publisher<std_msgs::msg::String>(
       "keyboard_input", 10);
 
+    calibration_status_sub_ = this->create_subscription<std_msgs::msg::String>(
+      "calibration_status", 10,
+      std::bind(&CommandPublisher::calibrationStatusCallback, this, std::placeholders::_1));
+
     status_sub_ = this->create_subscription<crazyflie_interfaces::msg::Status>(
       "cf2/status", 10,
       std::bind(&CommandPublisher::statusCallback, this, std::placeholders::_1));
@@ -87,6 +91,11 @@ public:
     noecho();
     nodelay(stdscr, TRUE);
     keypad(stdscr, TRUE);
+    if (has_colors()) {
+      start_color();
+      use_default_colors();
+      init_pair(1, COLOR_GREEN, -1);
+    }
 
     drawLayout();
     publishPositionControl();
@@ -644,8 +653,8 @@ private:
       status_msg_ = "published 'p' to keyboard_input (DISARM)";
       pushInputHistory("p : DISARM (keyboard_input)");
     } else if (key == 'f') {
-      status_msg_ = "published 'f' to keyboard_input (hover CoM calibration, configured mass retained)";
-      pushInputHistory("f : hover CoM calibration (configured mass retained)");
+      status_msg_ = "published 'f' to keyboard_input (firmware hover calibration)";
+      pushInputHistory("f : firmware hover calibration");
     } else {
       status_msg_ = "published keyboard trigger";
       pushInputHistory("keyboard trigger published");
@@ -657,6 +666,15 @@ private:
     if (msg) {
       latest_battery_voltage_ = msg->battery_voltage;
     }
+  }
+
+  void calibrationStatusCallback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    if (!msg || msg->data.empty()) {
+      return;
+    }
+    status_msg_ = msg->data;
+    pushInputHistory(msg->data);
   }
 
   void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -796,7 +814,15 @@ private:
 
     move(ROW_STATUS_MSG, 0);
     clrtoeol();
-    printw("status: %s", status_msg_.c_str());
+    printw("status: ");
+    const bool calibration_done = status_msg_ == "[calibration done]";
+    if (calibration_done && has_colors()) {
+      attron(COLOR_PAIR(1) | A_BOLD);
+    }
+    printw("%s", status_msg_.c_str());
+    if (calibration_done && has_colors()) {
+      attroff(COLOR_PAIR(1) | A_BOLD);
+    }
 
     refresh();
   }
@@ -833,6 +859,7 @@ private:
   rclcpp::Publisher<crazyflie_interfaces::msg::Position>::SharedPtr cf_position_pub_;
   rclcpp::Publisher<crazyflie_interfaces::msg::PositionControl>::SharedPtr position_control_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr key_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr calibration_status_sub_;
   rclcpp::Subscription<crazyflie_interfaces::msg::Status>::SharedPtr status_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
   rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr fw_cmd_sub_;

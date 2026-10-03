@@ -8,23 +8,29 @@ T=readtable(fullfile(path,file),detectImportOptions(fullfile(path,file),'Delimit
 t=safeTime(T); axesName=["X","Y","Z"];
 
 %% Figure 0 - IMU acceleration and onboard attitude estimate
-imuMovingAverageCutoffHz = 0.5;  % [Hz], <= 0 disables the MATLAB moving-average filter
+imuMovingAverageCutoffHz = 0.1;  % [Hz], <= 0 disables the MATLAB moving-average filter
 imuAccRaw = columnsXYZ(T,"imuAccRaw");
-imuAccFiltered = movingAverageCutoff(imuAccRaw,t,imuMovingAverageCutoffHz);
+imuAccTrimmed = columnsXYZ(T,"imuAccTrimmed");
+imuAccRawFiltered = movingAverageCutoff(imuAccRaw,t,imuMovingAverageCutoffHz);
+imuAccTrimmedFiltered = movingAverageCutoff(imuAccTrimmed,t,imuMovingAverageCutoffHz);
 % attitudeRoll/Pitch/Yaw are converted from the existing /cf2/pose quaternion by data_logging.
 attitudeEstimate = [safeColumn(T,"attitudeRoll"),safeColumn(T,"attitudePitch"),safeColumn(T,"attitudeYaw")];
 figure('Name','IMU acceleration and attitude estimate');
 for k=1:3
     subplot(3,2,2*k-1);
-    plot(t,imuAccRaw(:,k),'Color',[0.70 0.70 0.70],'LineWidth',2); hold on;
-    plot(t,imuAccFiltered(:,k),'Color',[0.00 0.45 0.74],'LineWidth',2); grid on;
+    plot(t,imuAccRaw(:,k),'Color',[0.60 0.78 0.92],'LineWidth',2); hold on;
+    plot(t,imuAccTrimmed(:,k),'Color',[0.95 0.70 0.65],'LineWidth',2);
+    plot(t,imuAccRawFiltered(:,k),'Color',[0.00 0.35 0.70],'LineWidth',2);
+    plot(t,imuAccTrimmedFiltered(:,k),'Color',[0.80 0.15 0.10],'LineWidth',2); grid on;
     ylabel(axesName(k)+' [g]');
     if k==1
-        title('Raw IMU acceleration / MATLAB moving average');
+        title('Acceleration before / after accTrim');
         if imuMovingAverageCutoffHz>0
-            legend('raw',sprintf('moving average %.2f Hz',imuMovingAverageCutoffHz));
+            legend('before raw','after raw', ...
+                sprintf('before MA %.2f Hz',imuMovingAverageCutoffHz), ...
+                sprintf('after MA %.2f Hz',imuMovingAverageCutoffHz));
         else
-            legend('raw','filter off');
+            legend('before','after','before (filter off)','after (filter off)');
         end
     end
     subplot(3,2,2*k);

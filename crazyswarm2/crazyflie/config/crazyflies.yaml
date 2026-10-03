@@ -47,10 +47,14 @@ robot_types:
         cf_mob_actuation:
           frequency: 30
           vars: [suWrenchObs.f1, suWrenchObs.f2, suWrenchObs.f3, suWrenchObs.f4, pm.vbat, suThrustEff.etaHat]
-        # Raw accelerometer used for accTrim tuning. Attitude comes from /cf2/pose.
-        cf_imu_raw:
+        # Accelerometer before accTrim and after accTrim + onboard LPF.
+        # Attitude comes from the already enabled /cf2/pose topic.
+        cf_imu_trim:
           frequency: 30
-          vars: [accRaw.x, accRaw.y, accRaw.z]
+          vars: [accRaw.x, accRaw.y, accRaw.z, acc.x, acc.y, acc.z]
+        cf_calibration:
+          frequency: 5
+          vars: [suCalib.state, suCalib.runId, suCalib.accRoll, suCalib.accPitch, suCalib.comX, suCalib.comY]
 
 
     firmware_params:
@@ -65,9 +69,6 @@ robot_types:
       su_position:
         velAccXY: 5.0  # [m/s^2] 5-sample velocity regression acceleration gate
         velAccZ: 8.0   # [m/s^2]
-      imu_sensors:
-        accTrimRoll: -0.47
-        accTrimPitch: 0.17
 
 
       kalman:

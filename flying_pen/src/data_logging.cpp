@@ -66,7 +66,7 @@ public:
     bind("cf_normal_eta", 6, &DataLoggingNode::normal_velocity_);
     bind("cf_mob_input", 6, &DataLoggingNode::mob_input_);
     bind("cf_mob_actuation", 6, &DataLoggingNode::mob_actuation_);
-    bind("cf_imu_raw", 3, &DataLoggingNode::imu_acc_raw_);
+    bind("cf_imu_trim", 6, &DataLoggingNode::imu_acc_trim_);
     tag_sub_ = create_subscription<std_msgs::msg::String>("/flying_pen/debug_log_filename_tag", 10, std::bind(&DataLoggingNode::tag, this, _1));
     publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(publish_topic_, 10);
     fw_cmd_publisher_ = create_publisher<geometry_msgs::msg::PointStamped>("/fw_cmd", 10);
@@ -81,11 +81,11 @@ public:
     const auto now = Clock::now();
     const double t = std::chrono::duration<double>(now - start_).count();
     const double dt_ms = std::chrono::duration<double, std::milli>(now - last_row_).count(); last_row_ = now;
-    std::vector<double> row; row.reserve(51); row.push_back(t); row.push_back(dt_ms);
+    std::vector<double> row; row.reserve(54); row.push_back(t); row.push_back(dt_ms);
     append(row, mocap_xyz_); append(row, wall_normal_); append(row, ee_tracking_);
     append(row, force_raw_); append(row, torque_bar_); append(row, contact_force_);
     append(row, normal_velocity_); append(row, mob_input_); append(row, mob_actuation_);
-    append(row, imu_acc_raw_); append(row, attitude_rpy_);
+    append(row, imu_acc_trim_); append(row, attitude_rpy_);
     csv_ << std::fixed << std::setprecision(9);
     for (size_t i = 0; i < row.size(); ++i) {
       csv_ << (i ? "," : "") << row[i];
@@ -104,8 +104,8 @@ public:
     mask_missing("cf_normal_eta", 27, 6);
     mask_missing("cf_mob_input", 33, 6);
     mask_missing("cf_mob_actuation", 39, 6);
-    mask_missing("cf_imu_raw", 45, 3);
-    if (!cf_pose_received_) for (size_t i=48; i<51; ++i) msg.data[i]=nan;
+    mask_missing("cf_imu_trim", 45, 6);
+    if (!cf_pose_received_) for (size_t i=51; i<54; ++i) msg.data[i]=nan;
     publisher_->publish(msg);
     if (received_.at("cf_ee_tracking")) {
       geometry_msgs::msg::PointStamped fw_cmd;
@@ -183,7 +183,8 @@ private:
       "forceNormalEstX,forceNormalEstY,forceNormalEstZ,fwEeVelX,fwEeVelY,fwEeVelZ,"
       "mobInputForceX,mobInputForceY,mobInputForceZ,mobInputTorqueX,mobInputTorqueY,mobInputTorqueZ,"
       "motorThrust1,motorThrust2,motorThrust3,motorThrust4,batteryVoltage,etaT,"
-      "imuAccRawX,imuAccRawY,imuAccRawZ,attitudeRoll,attitudePitch,attitudeYaw\n"; csv_.flush();
+      "imuAccRawX,imuAccRawY,imuAccRawZ,imuAccTrimmedX,imuAccTrimmedY,imuAccTrimmedZ,"
+      "attitudeRoll,attitudePitch,attitudeYaw\n"; csv_.flush();
   }
   std::string csv_dir_, csv_path_, cf_ns_, robot_name_, publish_topic_; std::ofstream csv_;
   double loop_hz_{50.0}, startup_check_delay_sec_{15.0}, last_flush_sec_{0.0}; Clock::time_point start_, last_row_;
@@ -193,7 +194,8 @@ private:
   std::array<double,6> ee_tracking_{0.0,0.0,0.0,0.0,0.0,0.0}, torque_bar_{0.0,0.0,0.0,0.0,0.0,0.0};
   std::array<double,6> normal_velocity_{0.0,0.0,0.0,0.0,0.0,0.0};
   std::array<double,6> mob_input_{0.0,0.0,0.0,0.0,0.0,0.0}, mob_actuation_{0.0,0.0,0.0,0.0,0.0,0.0};
-  std::array<double,3> imu_acc_raw_{0.0,0.0,0.0}, attitude_rpy_{0.0,0.0,0.0};
+  std::array<double,6> imu_acc_trim_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,3> attitude_rpy_{0.0,0.0,0.0};
   std::map<std::string,bool> received_; std::vector<rclcpp::Subscription<LogMsg>::SharedPtr> subscriptions_;
   rclcpp::Subscription<PosesMsg>::SharedPtr poses_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr cf_pose_sub_;
