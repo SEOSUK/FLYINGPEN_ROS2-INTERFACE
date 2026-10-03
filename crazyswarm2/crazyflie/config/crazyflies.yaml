@@ -25,40 +25,32 @@ robot_types:
         status:
           frequency: 1
       custom_topics:
-        # Velocity/noise diagnosis. Each block stays below the Crazyflie 26-byte payload limit.
-        cf_kalman_timing:
-          frequency: 10
-          vars: [kalman.rtPred, kalman.rtUpdate, kalman.rtFinal, kalman.resetCnt, kalman.supResetCnt, kalman.stateUpdCnt]
-        cf_loop_timing:
-          frequency: 10
-          vars: [stabilizer.loopDtUs, stabilizer.loopDtUsMax, stabilizer.loopOvrCnt]
-        cf_extpos_timing:
-          frequency: 20
-          vars: [locSrv.rxDtMs, locSrv.rxCount, locSrv.gapCount, locSrv.gapLastMs, locSrv.rxDtMaxMs]
-        cf_extpos_xyz:
+        # Force-control telemetry. Every block fits in one 26-byte CRTP log packet.
+        cf_ee_tracking:
           frequency: 30
-          vars: [locSrv.x, locSrv.y, locSrv.z]
-        cf_state_posvel:
+          vars: [suPosRef.eeCmdX, suPosRef.eeCmdY, suPosRef.eeCmdZ, suPosRef.eePosX, suPosRef.eePosY, suPosRef.eePosZ]
+        cf_force_raw:
           frequency: 30
-          vars: [stateEstimate.x, stateEstimate.y, stateEstimate.z, stateEstimate.vx, stateEstimate.vy, stateEstimate.vz]
-        cf_pos_velocity:
+          vars: [suPosRef.forceCmd, suWrenchObs.fHatWx, suWrenchObs.fHatWy, suWrenchObs.fHatWz]
+        cf_mob_torque_bar:
           frequency: 30
-          vars: [suVelFromPos.rawVx, suVelFromPos.rawVy, suVelFromPos.rawVz, suVelFromPos.vx, suVelFromPos.vy, suVelFromPos.vz]
-        cf_pos_velocity_events:
-          frequency: 10
-          vars: [suVelFromPos.dPosX, suVelFromPos.dPosY, suVelFromPos.dPosZ, suVelFromPos.rejectCnt, suVelFromPos.resetCnt]
-        cf_contact_velocity:
+          vars: [suWrenchObs.tauLWx, suWrenchObs.tauLWy, suWrenchObs.tauLWz, suThrustEff.fBarX, suThrustEff.fBarY, suThrustEff.fBarZ]
+        cf_contact_force:
           frequency: 30
-          vars: [suVelMod.vcRawX, suVelMod.vcRawY, suVelMod.vcRawZ, suVelMod.vcX, suVelMod.vcY, suVelMod.vcZ]
-        cf_contact_offset_velocity:
+          vars: [suThrustEff.fContactX, suThrustEff.fContactY, suThrustEff.fContactZ]
+        cf_normal_eta:
           frequency: 30
-          vars: [suWrenchObs.rotVelX, suWrenchObs.rotVelY, suWrenchObs.rotVelZ]
-        cf_velocity_command:
-          frequency: 10
-          vars: [ctrltarget.vx, ctrltarget.vy, ctrltarget.vz]
-        cf_gyro_body:
-          frequency: 10
-          vars: [gyro.x, gyro.y, gyro.z]
+          vars: [suPosRef.nEstX, suPosRef.nEstY, suPosRef.nEstZ, suPosRef.vEeX, suPosRef.vEeY, suPosRef.vEeZ]
+        cf_mob_input:
+          frequency: 30
+          vars: [suWrenchObs.fInWx, suWrenchObs.fInWy, suWrenchObs.fInWz, suWrenchObs.tauInBx, suWrenchObs.tauInBy, suWrenchObs.tauInBz]
+        cf_mob_actuation:
+          frequency: 30
+          vars: [suWrenchObs.f1, suWrenchObs.f2, suWrenchObs.f3, suWrenchObs.f4, pm.vbat, suThrustEff.etaHat]
+        # Raw accelerometer used for accTrim tuning. Attitude comes from /cf2/pose.
+        cf_imu_raw:
+          frequency: 30
+          vars: [accRaw.x, accRaw.y, accRaw.z]
 
 
     firmware_params:

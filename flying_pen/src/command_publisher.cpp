@@ -49,10 +49,10 @@ public:
       "cf2/pose", 10,
       std::bind(&CommandPublisher::poseCallback, this, std::placeholders::_1));
     fw_cmd_sub_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      "cf2/cf_ctrl_target_pos", 10,
+      "cf2/cf_ee_tracking", 10,
       std::bind(&CommandPublisher::fwCmdPositionCallback, this, std::placeholders::_1));
     mob_force_sub_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      "cf2/cf_Fext_MOB", 10,
+      "cf2/cf_contact_force", 10,
       std::bind(&CommandPublisher::mobForceCallback, this, std::placeholders::_1));
 
     position_tick_ = declareVector3Parameter("position_tick", {0.1, 0.1, 0.2});

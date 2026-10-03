@@ -16,10 +16,14 @@ HOVER_GRAVITY = 9.81
 HOVER_CALIBRATION_WINDOW_SEC = 2.0
 HOVER_BUFFER_KEEP_SEC = 3.0
 HOVER_MIN_SAMPLES = 20
-THRUST_INDEX_RANGE = range(13, 17)
-BODY_TORQUE_INDEX_RANGE = range(27, 30)
+# Canonical 51-column force-control schema from flying_pen/data_logging.cpp.
+MOB_INPUT_TORQUE_INDEX_RANGE = range(36, 39)
+MOTOR_THRUST_INDEX_RANGE = range(39, 43)
+FORCE_CONTROL_COLUMN_COUNT = 51
 HOVER_TRIGGER_RETRY_PERIOD_SEC = 1.0
-HOVER_TRIGGER_RETRY_COUNT = 3
+HOVER_TRIGGER_RETRY_COUNT = 1
+DISARM_RETRY_PERIOD_SEC = 0.1
+DISARM_RETRY_COUNT = 20
 
 
 class SuInterface(Node):
@@ -52,6 +56,7 @@ class SuInterface(Node):
         self.latest_hover_calibration = None
         self.pending_hover_calibration_repeats = 0
         self.disarm_retry_timer = None
+        self.pending_disarm_repeats = 0
         self.su_params_path = Path(get_package_share_directory('crazyflie')) / 'config' / 'su_params.yaml'
         self.current_mass, self.current_com_off_x, self.current_com_off_y = self._load_current_hover_calibration()
         self.hover_calibration_retry_timer = self.create_timer(
@@ -65,6 +70,7 @@ class SuInterface(Node):
             return
         input_char = msg.data[0]
         if input_char == 'o':
+            self._cancel_disarm_retries()
             self.cf.arm(True)
             self.get_logger().info('ARM command sent.')
         elif input_char == 'p':
@@ -73,11 +79,11 @@ class SuInterface(Node):
             self.trigger_hover_calibration()
 
     def debug_callback(self, msg):
-        if len(msg.data) <= BODY_TORQUE_INDEX_RANGE.stop - 1:
+        if len(msg.data) != FORCE_CONTROL_COLUMN_COUNT:
             return
 
-        motor_thrust = [msg.data[i] for i in THRUST_INDEX_RANGE]
-        body_torque = [msg.data[i] for i in BODY_TORQUE_INDEX_RANGE]
+        motor_thrust = [msg.data[i] for i in MOTOR_THRUST_INDEX_RANGE]
+        body_torque = [msg.data[i] for i in MOB_INPUT_TORQUE_INDEX_RANGE]
         if not all(math.isfinite(value) for value in motor_thrust + body_torque):
             return
 
@@ -124,9 +130,8 @@ class SuInterface(Node):
 
         if len(samples) < HOVER_MIN_SAMPLES:
             self.get_logger().warning(
-                'HOVER CALIBRATION skipped: only %d samples in the last %.1f s on /data_logging_msg',
-                len(samples),
-                HOVER_CALIBRATION_WINDOW_SEC,
+                'HOVER CALIBRATION skipped: only %d samples in the last %.1f s on /data_logging_msg'
+                % (len(samples), HOVER_CALIBRATION_WINDOW_SEC)
             )
             return
 
@@ -136,8 +141,7 @@ class SuInterface(Node):
 
         if not math.isfinite(hover_thrust) or hover_thrust <= 1e-6:
             self.get_logger().warning(
-                'HOVER CALIBRATION skipped: invalid hover thrust %.6f N',
-                hover_thrust,
+                'HOVER CALIBRATION skipped: invalid hover thrust %.6f N' % hover_thrust
             )
             return
 
@@ -160,10 +164,8 @@ class SuInterface(Node):
 
         if not all(math.isfinite(value) for value in (mass, com_off_x, com_off_y)):
             self.get_logger().warning(
-                'HOVER CALIBRATION skipped: invalid estimate mass=%.6f, comOffX=%.6f, comOffY=%.6f',
-                mass,
-                com_off_x,
-                com_off_y,
+                'HOVER CALIBRATION skipped: invalid estimate mass=%.6f, comOffX=%.6f, comOffY=%.6f'
+                % (mass, com_off_x, com_off_y)
             )
             return
 
@@ -189,19 +191,21 @@ class SuInterface(Node):
             'HOVER CALIBRATION local result: samples=%d, thrust=%.4f N, tau_input=(%.5f, %.5f) N*m, '
             'configured mass=%.4f kg, hover-estimated mass=%.4f kg, '
             'current comOffXY=(%.5f, %.5f) m, delta comOffXY=(%.5f, %.5f) m, '
-            'new comOffXY=(%.5f, %.5f) m',
-            calibration['sample_count'],
-            calibration['hover_thrust'],
-            calibration['tau_x'],
-            calibration['tau_y'],
-            calibration['mass'],
-            measured_mass,
-            current_com_off_x,
-            current_com_off_y,
-            calibration['delta_com_x'],
-            calibration['delta_com_y'],
-            calibration['com_off_x'],
-            calibration['com_off_y'],
+            'new comOffXY=(%.5f, %.5f) m'
+            % (
+                calibration['sample_count'],
+                calibration['hover_thrust'],
+                calibration['tau_x'],
+                calibration['tau_y'],
+                calibration['mass'],
+                measured_mass,
+                current_com_off_x,
+                current_com_off_y,
+                calibration['delta_com_x'],
+                calibration['delta_com_y'],
+                calibration['com_off_x'],
+                calibration['com_off_y'],
+            )
         )
 
     def send_hover_calibration_trigger(self, calibration, *, log_request):
@@ -215,11 +219,13 @@ class SuInterface(Node):
         if log_request:
             self.get_logger().info(
                 'HOVER CALIBRATION trigger published to cf2/hover_calibration: samples=%d, '
-                'mass=%.4f kg, comOffXY=(%.5f, %.5f) m',
-                calibration['sample_count'],
-                calibration['mass'],
-                calibration['com_off_x'],
-                calibration['com_off_y'],
+                'mass=%.4f kg, comOffXY=(%.5f, %.5f) m'
+                % (
+                    calibration['sample_count'],
+                    calibration['mass'],
+                    calibration['com_off_x'],
+                    calibration['com_off_y'],
+                )
             )
 
     def retry_hover_calibration_trigger(self):
@@ -231,22 +237,45 @@ class SuInterface(Node):
         self.pending_hover_calibration_repeats -= 1
 
     def request_disarm(self):
-        self.cf.notifySetpointsStop(remainValidMillisecs=0)
+        # Disarm has priority over calibration retries. Do not keep sending
+        # hover-calibration app-channel packets after the operator presses p.
+        self.pending_hover_calibration_repeats = 0
+        self.latest_hover_calibration = None
+        # Send the safety-critical arming-off request first. The setpoint-stop
+        # notification is useful, but disarming must not wait behind it.
         self.cf.arm(False)
-        self.get_logger().info('DISARM command sent.')
+        self.cf.notifySetpointsStop(remainValidMillisecs=0)
+        self.pending_disarm_repeats = DISARM_RETRY_COUNT - 1
+        self.get_logger().warning(
+            'DISARM command sent; repeating arming-off at %.1f Hz for %.1f s.'
+            % (
+                1.0 / DISARM_RETRY_PERIOD_SEC,
+                DISARM_RETRY_PERIOD_SEC * DISARM_RETRY_COUNT,
+            )
+        )
 
         if self.disarm_retry_timer is not None:
             self.disarm_retry_timer.cancel()
 
-        self.disarm_retry_timer = self.create_timer(0.12, self._retry_disarm_once)
+        self.disarm_retry_timer = self.create_timer(
+            DISARM_RETRY_PERIOD_SEC,
+            self._retry_disarm,
+        )
 
-    def _retry_disarm_once(self):
-        self.cf.notifySetpointsStop(remainValidMillisecs=0)
-        self.cf.arm(False)
-        self.get_logger().info('DISARM retry sent.')
+    def _cancel_disarm_retries(self):
+        self.pending_disarm_repeats = 0
         if self.disarm_retry_timer is not None:
             self.disarm_retry_timer.cancel()
             self.disarm_retry_timer = None
+
+    def _retry_disarm(self):
+        if self.pending_disarm_repeats <= 0:
+            self._cancel_disarm_retries()
+            self.get_logger().info('DISARM retry sequence completed.')
+            return
+
+        self.cf.arm(False)
+        self.pending_disarm_repeats -= 1
 
     def shutdown(self):
         self.cf.land(targetHeight=0.04, duration=2.5)

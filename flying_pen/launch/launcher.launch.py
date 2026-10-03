@@ -41,11 +41,7 @@ def launch_setup(context, *args, **kwargs):
     runtime_mode = runtime_cfg.get("runtime", {}).get("ros__parameters", {}).get("mode", "default")
     logger_cfg = runtime_cfg.get("data_logging", {}).get("ros__parameters", {})
     logger_topic = logger_cfg.get("publish_topic", "/data_logging_msg")
-    rviz_config = os.path.join(
-        log_player_share,
-        "config",
-        "log_player_debug.rviz" if runtime_mode == "debug" else "log_player.rviz",
-    )
+    rviz_config = os.path.join(fp_share, "config", "force_control.rviz")
     urdf_path = urdf_debug_path if runtime_mode == "debug" else urdf_default_path
 
     with open(urdf_path, "r", encoding="utf-8") as f:

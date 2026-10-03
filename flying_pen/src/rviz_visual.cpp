@@ -34,6 +34,7 @@ constexpr std::size_t kRawMobDataSize = kRawMobForceIndex + 3;
 constexpr std::size_t kContactForceDataSize = kContactForceIndex + 3;
 constexpr std::size_t kForceBarDataSize = kForceBarIndex + 3;
 constexpr std::size_t kVelocityDebugDataSize = 58;
+constexpr std::size_t kForceControlDataSize = 51;
 constexpr std::size_t kVcLpfIndex = 46;
 constexpr double kForceArrowScale = 10.0;
 
@@ -97,13 +98,9 @@ public:
 
     raw_cmd_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/cmd_position_marker", 10);
     fw_cmd_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/fw_cmd_position_marker", 10);
-    raw_force_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/raw_mob_force_marker", 10);
-    force_bar_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/force_bar_marker", 10);
     contact_force_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/contact_force_marker", 10);
     normal_est_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/normal_est_marker", 10);
-    acc_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/acc_marker", 10);
-    vel_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/vel_marker", 10);
-    vc_lpf_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/vc_lpf_marker", 10);
+    ee_velocity_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/ee_velocity_marker", 10);
     wall_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/wall_marker", 10);
     ee_history_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/ee_trajectory_history", 10);
     contact_history_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -117,13 +114,12 @@ public:
     raw_mob_force_.setConstant(nan);
     force_bar_.setConstant(nan);
     contact_force_.setConstant(nan);
-    normal_est_.setZero();
+    normal_est_.setConstant(nan);
+    ee_velocity_.setConstant(nan);
     world_vel_.setZero();
     world_acc_.setZero();
     vc_lpf_.setZero();
-    // Keep the URDF root connected to RViz immediately. The zero pose is
-    // replaced as soon as the first matching /poses sample arrives.
-    pose_valid_ = true;
+    pose_valid_ = false;
 
     RCLCPP_INFO(get_logger(), "rviz_visual started. subscribing %s", data_topic_.c_str());
   }
@@ -170,6 +166,10 @@ private:
       }
 
       if (named_pose.name == wall_pose_name_) {
+        const double q_norm = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+        if (q_norm < 1.0e-9) {
+          continue;
+        }
         wall_pose_ = named_pose.pose;
         wall_pose_valid_ = true;
       }
@@ -182,6 +182,21 @@ private:
 
   void dataCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
+    if (msg->data.size() == kForceControlDataSize) {
+      const Eigen::Vector3d fw_cmd(msg->data[8], msg->data[9], msg->data[10]);
+      const Eigen::Vector3d contact_force(msg->data[24], msg->data[25], msg->data[26]);
+      const Eigen::Vector3d normal_est(msg->data[27], msg->data[28], msg->data[29]);
+      const Eigen::Vector3d ee_velocity(msg->data[30], msg->data[31], msg->data[32]);
+      if (isFiniteVector(fw_cmd)) { fw_cmd_pos_ = fw_cmd; fw_cmd_valid_ = true; }
+      else { fw_cmd_valid_ = false; publishDelete(fw_cmd_pub_, "fw_cmd_position", 0); }
+      if (isFiniteVector(contact_force)) { contact_force_ = contact_force; contact_force_valid_ = true; }
+      else { contact_force_valid_ = false; publishDelete(contact_force_pub_, "contact_force", 0); }
+      if (isFiniteVector(normal_est) && normal_est.norm() > 1.0e-9) { normal_est_ = normal_est; normal_est_valid_ = true; }
+      else { normal_est_valid_ = false; publishDelete(normal_est_pub_, "normal_estimation", 0); }
+      if (isFiniteVector(ee_velocity)) { ee_velocity_ = ee_velocity; ee_velocity_valid_ = true; }
+      else { ee_velocity_valid_ = false; publishDelete(ee_velocity_pub_, "ee_velocity", 0); }
+      return;
+    }
     if (msg->data.size() >= kVelocityDebugDataSize && msg->data.size() < 82) {
       vc_lpf_[0] = msg->data[kVcLpfIndex];
       vc_lpf_[1] = msg->data[kVcLpfIndex + 1];
@@ -190,9 +205,6 @@ private:
     }
 
     if (msg->data.size() < 82) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "msg size too small (%zu), expected >= %zu", msg->data.size(), kVelocityDebugDataSize);
       return;
     }
 
@@ -208,10 +220,12 @@ private:
     cmd_pos_[1] = msg->data[7];
     cmd_pos_[2] = msg->data[8];
     cmd_yaw_deg_ = msg->data[9];
+    cmd_valid_ = isFiniteVector(cmd_pos_) && std::isfinite(cmd_yaw_deg_);
 
     fw_cmd_pos_[0] = msg->data[10];
     fw_cmd_pos_[1] = msg->data[11];
     fw_cmd_pos_[2] = msg->data[12];
+    fw_cmd_valid_ = isFiniteVector(fw_cmd_pos_);
 
     world_vel_[0] = msg->data[30];
     world_vel_[1] = msg->data[31];
@@ -251,14 +265,20 @@ private:
       contact_force_[1] = msg->data[kContactForceIndex + 1];
       contact_force_[2] = msg->data[kContactForceIndex + 2];
     }
+    contact_force_valid_ = isFiniteVector(contact_force_);
 
     normal_est_[0] = msg->data[76];
     normal_est_[1] = msg->data[77];
     normal_est_[2] = msg->data[78];
+    normal_est_valid_ = isFiniteVector(normal_est_);
 
     vc_lpf_[0] = msg->data[79];
     vc_lpf_[1] = msg->data[80];
     vc_lpf_[2] = msg->data[81];
+    if (isFiniteVector(vc_lpf_)) {
+      ee_velocity_ = vc_lpf_;
+      ee_velocity_valid_ = true;
+    }
 
     if (msg->data.size() >= 96) {
       geometry_msgs::msg::Pose wall_pose_from_log;
@@ -326,36 +346,34 @@ private:
     const auto normal_frame_axes = computeNormalFrameAxes();
     const auto normal_frame_quat = makeQuaternionFromAxes(normal_frame_axes);
 
-    geometry_msgs::msg::TransformStamped tf_cmd;
-    tf_cmd.header.stamp = stamp;
-    tf_cmd.header.frame_id = "world";
-    tf_cmd.child_frame_id = "crazyflie_cmd";
-    tf_cmd.transform.translation.x = cmd_pos_[0];
-    tf_cmd.transform.translation.y = cmd_pos_[1];
-    tf_cmd.transform.translation.z = cmd_pos_[2];
-
     tf2::Quaternion q_cmd;
     q_cmd.setRPY(0.0, 0.0, cmd_yaw_deg_ * kDegToRad);
-    tf_cmd.transform.rotation.x = q_cmd.x();
-    tf_cmd.transform.rotation.y = q_cmd.y();
-    tf_cmd.transform.rotation.z = q_cmd.z();
-    tf_cmd.transform.rotation.w = q_cmd.w();
-    tf_broadcaster_->sendTransform(tf_cmd);
+    if (cmd_valid_) {
+      geometry_msgs::msg::TransformStamped tf_cmd;
+      tf_cmd.header.stamp = stamp;
+      tf_cmd.header.frame_id = "world";
+      tf_cmd.child_frame_id = "crazyflie_cmd";
+      tf_cmd.transform.translation.x = cmd_pos_[0];
+      tf_cmd.transform.translation.y = cmd_pos_[1];
+      tf_cmd.transform.translation.z = cmd_pos_[2];
+      tf_cmd.transform.rotation.x = q_cmd.x();
+      tf_cmd.transform.rotation.y = q_cmd.y();
+      tf_cmd.transform.rotation.z = q_cmd.z();
+      tf_cmd.transform.rotation.w = q_cmd.w();
+      tf_broadcaster_->sendTransform(tf_cmd);
+    }
 
-    geometry_msgs::msg::TransformStamped tf_fw_cmd;
-    tf_fw_cmd.header.stamp = stamp;
-    tf_fw_cmd.header.frame_id = "world";
-    tf_fw_cmd.child_frame_id = "crazyflie_fw_cmd";
-    tf_fw_cmd.transform.translation.x = fw_cmd_pos_[0];
-    tf_fw_cmd.transform.translation.y = fw_cmd_pos_[1];
-    tf_fw_cmd.transform.translation.z = fw_cmd_pos_[2];
-    tf_fw_cmd.transform.rotation = tf_cmd.transform.rotation;
-    tf_broadcaster_->sendTransform(tf_fw_cmd);
-
-    geometry_msgs::msg::Point p0;
-    p0.x = pos_[0];
-    p0.y = pos_[1];
-    p0.z = pos_[2];
+    if (fw_cmd_valid_) {
+      geometry_msgs::msg::TransformStamped tf_fw_cmd;
+      tf_fw_cmd.header.stamp = stamp;
+      tf_fw_cmd.header.frame_id = "world";
+      tf_fw_cmd.child_frame_id = "crazyflie_fw_cmd";
+      tf_fw_cmd.transform.translation.x = fw_cmd_pos_[0];
+      tf_fw_cmd.transform.translation.y = fw_cmd_pos_[1];
+      tf_fw_cmd.transform.translation.z = fw_cmd_pos_[2];
+      tf_fw_cmd.transform.rotation.w = 1.0;
+      tf_broadcaster_->sendTransform(tf_fw_cmd);
+    }
 
     geometry_msgs::msg::Point p_ee;
     p_ee.x = ee_pos.x();
@@ -372,16 +390,11 @@ private:
     p_fw_cmd.y = fw_cmd_pos_[1];
     p_fw_cmd.z = fw_cmd_pos_[2];
 
-    publishSphere(raw_cmd_pub_, stamp, "world", "cmd_position", 0, p_cmd, 0.05, 0.0f, 0.45f, 0.90f, 0.85f);
-    publishSphere(fw_cmd_pub_, stamp, "world", "fw_cmd_position", 0, p_fw_cmd, 0.06, 0.90f, 0.35f, 0.10f, 0.90f);
-
-    publishArrow(raw_force_pub_, stamp, "world", "raw_mob_force", 0, p_ee, raw_mob_force_, kForceArrowScale, 0.02, 0.04, 0.06, 1.0f, 0.2f, 0.2f);
-    publishArrow(force_bar_pub_, stamp, "world", "force_bar", 0, p_ee, force_bar_, kForceArrowScale, 0.02, 0.04, 0.06, 0.1f, 0.4f, 1.0f);
-    publishArrow(contact_force_pub_, stamp, "world", "contact_force", 0, p_ee, contact_force_, kForceArrowScale, 0.02, 0.04, 0.06, 0.7f, 0.0f, 0.8f);
-    publishArrow(normal_est_pub_, stamp, "world", "normal_estimation", 0, p_ee, normal_est_, 0.35, 0.02, 0.04, 0.06, 0.1f, 0.8f, 0.2f);
-    publishArrow(acc_pub_, stamp, "world", "acceleration", 0, p0, world_acc_, 0.5, 0.015, 0.03, 0.05, 0.0f, 0.0f, 1.0f);
-    publishArrow(vel_pub_, stamp, "world", "velocity", 0, p0, world_vel_, 1.0, 0.015, 0.03, 0.05, 1.0f, 0.8f, 0.0f);
-    publishArrow(vc_lpf_pub_, stamp, "world", "vc_lpf", 0, p_ee, vc_lpf_, 2.0, 0.015, 0.03, 0.05, 0.0f, 0.9f, 0.9f);
+    if (cmd_valid_) publishSphere(raw_cmd_pub_, stamp, "world", "cmd_position", 0, p_cmd, 0.05, 0.0f, 0.45f, 0.90f, 0.85f);
+    if (fw_cmd_valid_) publishSphere(fw_cmd_pub_, stamp, "world", "fw_cmd_position", 0, p_fw_cmd, 0.06, 0.90f, 0.35f, 0.10f, 0.90f);
+    if (contact_force_valid_) publishArrow(contact_force_pub_, stamp, "world", "contact_force", 0, p_ee, contact_force_, kForceArrowScale, 0.02, 0.04, 0.06, 0.7f, 0.0f, 0.8f);
+    if (normal_est_valid_) publishArrow(normal_est_pub_, stamp, "world", "normal_estimation", 0, p_ee, normal_est_, 0.35, 0.02, 0.04, 0.06, 0.1f, 0.8f, 0.2f);
+    if (ee_velocity_valid_) publishArrow(ee_velocity_pub_, stamp, "world", "ee_velocity", 0, p_ee, ee_velocity_, 2.0, 0.015, 0.03, 0.05, 0.0f, 0.9f, 0.9f);
     pushSmoothTrajectorySample(ee_pos, stamp);
     const auto new_history_sample = pushFrameHistorySample(ee_pos, normal_frame_quat, stamp);
     publishFrameHistoryDelta(stamp, expired_history_ids, new_history_sample);
@@ -815,7 +828,9 @@ private:
     marker.id = id;
     if (
       !std::isfinite(start.x) || !std::isfinite(start.y) || !std::isfinite(start.z) ||
-      !isFiniteVector(vec))
+      !isFiniteVector(vec) || vec.norm() <= 1.0e-9 ||
+      !std::isfinite(scale_factor) || !std::isfinite(sx) || !std::isfinite(sy) ||
+      !std::isfinite(sz) || sx <= 0.0 || sy <= 0.0 || sz <= 0.0)
     {
       marker.action = visualization_msgs::msg::Marker::DELETE;
       pub->publish(marker);
@@ -841,6 +856,20 @@ private:
     pub->publish(marker);
   }
 
+  void publishDelete(
+    const rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr & pub,
+    const std::string & ns,
+    int id)
+  {
+    visualization_msgs::msg::Marker marker;
+    marker.header.stamp = get_clock()->now();
+    marker.header.frame_id = "world";
+    marker.ns = ns;
+    marker.id = id;
+    marker.action = visualization_msgs::msg::Marker::DELETE;
+    pub->publish(marker);
+  }
+
   void publishSphere(
     const rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr& pub,
     const rclcpp::Time& stamp,
@@ -859,6 +888,15 @@ private:
     marker.header.frame_id = frame_id;
     marker.ns = ns;
     marker.id = id;
+    if (
+      !std::isfinite(center.x) || !std::isfinite(center.y) || !std::isfinite(center.z) ||
+      !std::isfinite(scale) || scale <= 0.0 ||
+      !std::isfinite(r) || !std::isfinite(g) || !std::isfinite(b) || !std::isfinite(a))
+    {
+      marker.action = visualization_msgs::msg::Marker::DELETE;
+      pub->publish(marker);
+      return;
+    }
     marker.type = visualization_msgs::msg::Marker::SPHERE;
     marker.action = visualization_msgs::msg::Marker::ADD;
     marker.pose.position = center;
@@ -878,6 +916,13 @@ private:
   {
     const bool use_tf_frame = !wall_marker_frame_.empty();
     if (!wall_pose_valid_) {
+      return;
+    }
+    if (
+      !std::isfinite(wall_scale_x_) || !std::isfinite(wall_scale_y_) ||
+      !std::isfinite(wall_scale_z_) || wall_scale_x_ <= 0.0 ||
+      wall_scale_y_ <= 0.0 || wall_scale_z_ <= 0.0)
+    {
       return;
     }
 
@@ -1052,13 +1097,9 @@ private:
 
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr raw_cmd_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr fw_cmd_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr raw_force_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr force_bar_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr contact_force_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr normal_est_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr acc_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr vel_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr vc_lpf_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr ee_velocity_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr ee_history_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr contact_history_pub_;
@@ -1072,6 +1113,7 @@ private:
   Eigen::Vector3d force_bar_;
   Eigen::Vector3d contact_force_;
   Eigen::Vector3d normal_est_;
+  Eigen::Vector3d ee_velocity_;
   Eigen::Vector3d world_vel_;
   Eigen::Vector3d world_acc_;
   Eigen::Vector3d vc_lpf_;
@@ -1100,6 +1142,11 @@ private:
   bool pose_valid_{false};
   bool firmware_pose_received_{false};
   bool wall_pose_valid_{false};
+  bool cmd_valid_{false};
+  bool fw_cmd_valid_{false};
+  bool contact_force_valid_{false};
+  bool normal_est_valid_{false};
+  bool ee_velocity_valid_{false};
 };
 
 int main(int argc, char* argv[])

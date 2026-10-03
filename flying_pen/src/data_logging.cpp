@@ -2,10 +2,14 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include <crazyflie_interfaces/msg/log_data_generic.hpp>
 #include <motion_capture_tracking_interfaces/msg/named_pose_array.hpp>
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -25,7 +29,6 @@ using Clock = std::chrono::steady_clock;
 using std::placeholders::_1;
 
 namespace {
-double nanv() { return std::numeric_limits<double>::quiet_NaN(); }
 std::string expand_user(const std::string & p) {
   if (!p.empty() && p[0] == '~') if (const char * h = std::getenv("HOME")) return std::string(h) + p.substr(1);
   return p;
@@ -45,32 +48,31 @@ public:
     csv_dir_ = expand_user(declare_parameter<std::string>("csv_dir", "~/hitl_ws/src/flying_pen/bag/logging"));
     cf_ns_ = declare_parameter<std::string>("cf_ns", "/cf2");
     loop_hz_ = declare_parameter<double>("loop_hz", 50.0);
+    startup_check_delay_sec_ = declare_parameter<double>("startup_check_delay_sec", 15.0);
     publish_topic_ = declare_parameter<std::string>("publish_topic", "/data_logging_msg");
     robot_name_ = cf_ns_; while (!robot_name_.empty() && robot_name_.front() == '/') robot_name_.erase(robot_name_.begin());
     std::filesystem::create_directories(csv_dir_);
-    csv_path_ = (std::filesystem::path(csv_dir_) / (timestamp() + "_velocity.csv")).string();
+    csv_path_ = (std::filesystem::path(csv_dir_) / (timestamp() + "_force_control.csv")).string();
     csv_.open(csv_path_, std::ios::out | std::ios::trunc);
     if (!csv_) throw std::runtime_error("Cannot open " + csv_path_);
     write_header();
     poses_sub_ = create_subscription<PosesMsg>("/poses", rclcpp::SensorDataQoS(), std::bind(&DataLoggingNode::poses, this, _1));
-    received_["mocap_receive_debug"] = false;
-    mocap_debug_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
-      "/mocap_receive_debug", rclcpp::SensorDataQoS().keep_last(1),
-      std::bind(&DataLoggingNode::mocap_debug, this, _1));
-    bind("cf_kalman_timing", 6, &DataLoggingNode::kalman_);
-    bind("cf_loop_timing", 3, &DataLoggingNode::loop_);
-    bind("cf_extpos_timing", 5, &DataLoggingNode::ext_timing_);
-    bind("cf_extpos_xyz", 3, &DataLoggingNode::ext_xyz_);
-    bind("cf_state_posvel", 6, &DataLoggingNode::state_);
-    bind("cf_pos_velocity", 6, &DataLoggingNode::pos_velocity_);
-    bind("cf_pos_velocity_events", 5, &DataLoggingNode::pos_events_);
-    bind("cf_contact_velocity", 6, &DataLoggingNode::contact_velocity_);
-    bind("cf_contact_offset_velocity", 3, &DataLoggingNode::contact_offset_velocity_);
-    bind("cf_velocity_command", 3, &DataLoggingNode::command_);
-    bind("cf_gyro_body", 3, &DataLoggingNode::gyro_);
+    cf_pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
+      cf_ns_ + "/pose", 10, std::bind(&DataLoggingNode::cf_pose, this, _1));
+    bind("cf_ee_tracking", 6, &DataLoggingNode::ee_tracking_);
+    bind("cf_force_raw", 4, &DataLoggingNode::force_raw_);
+    bind("cf_mob_torque_bar", 6, &DataLoggingNode::torque_bar_);
+    bind("cf_contact_force", 3, &DataLoggingNode::contact_force_);
+    bind("cf_normal_eta", 6, &DataLoggingNode::normal_velocity_);
+    bind("cf_mob_input", 6, &DataLoggingNode::mob_input_);
+    bind("cf_mob_actuation", 6, &DataLoggingNode::mob_actuation_);
+    bind("cf_imu_raw", 3, &DataLoggingNode::imu_acc_raw_);
     tag_sub_ = create_subscription<std_msgs::msg::String>("/flying_pen/debug_log_filename_tag", 10, std::bind(&DataLoggingNode::tag, this, _1));
     publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(publish_topic_, 10);
-    startup_timer_ = create_wall_timer(std::chrono::seconds(5), std::bind(&DataLoggingNode::check_topics, this));
+    fw_cmd_publisher_ = create_publisher<geometry_msgs::msg::PointStamped>("/fw_cmd", 10);
+    startup_timer_ = create_wall_timer(
+      std::chrono::duration<double>(std::max(1.0, startup_check_delay_sec_)),
+      std::bind(&DataLoggingNode::check_topics, this));
     RCLCPP_INFO(get_logger(), "Flight-data CSV: %s", csv_path_.c_str());
   }
   ~DataLoggingNode() override { csv_.flush(); }
@@ -79,20 +81,38 @@ public:
     const auto now = Clock::now();
     const double t = std::chrono::duration<double>(now - start_).count();
     const double dt_ms = std::chrono::duration<double, std::milli>(now - last_row_).count(); last_row_ = now;
-    std::vector<double> row; row.reserve(58); row.push_back(t); row.push_back(dt_ms);
-    append(row, mocap_xyz_); row.push_back(mocap_dt_ms_); row.push_back(mocap_count_);
-    row.push_back(mocap_source_time_); row.push_back(mocap_source_age_ms_);
-    append(row, ext_xyz_); append(row, ext_timing_); append(row, kalman_); append(row, loop_);
-    append(row, state_); append(row, pos_velocity_); append(row, pos_events_);
-    append(row, contact_velocity_); append(row, contact_offset_velocity_);
-    append(row, command_); append(row, gyro_);
+    std::vector<double> row; row.reserve(51); row.push_back(t); row.push_back(dt_ms);
+    append(row, mocap_xyz_); append(row, wall_normal_); append(row, ee_tracking_);
+    append(row, force_raw_); append(row, torque_bar_); append(row, contact_force_);
+    append(row, normal_velocity_); append(row, mob_input_); append(row, mob_actuation_);
+    append(row, imu_acc_raw_); append(row, attitude_rpy_);
     csv_ << std::fixed << std::setprecision(9);
     for (size_t i = 0; i < row.size(); ++i) {
       csv_ << (i ? "," : "") << row[i];
     }
     csv_ << '\n';
     if (t - last_flush_sec_ >= 1.0) { csv_.flush(); last_flush_sec_ = t; }
-    std_msgs::msg::Float64MultiArray msg; msg.data = row; publisher_->publish(msg);
+    std_msgs::msg::Float64MultiArray msg; msg.data = row;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const auto mask_missing = [this, &msg, nan](const std::string & topic, size_t first, size_t count) {
+      if (!received_.at(topic)) for (size_t i=first; i<first+count; ++i) msg.data[i]=nan;
+    };
+    mask_missing("cf_ee_tracking", 8, 6);
+    mask_missing("cf_force_raw", 14, 4);
+    mask_missing("cf_mob_torque_bar", 18, 6);
+    mask_missing("cf_contact_force", 24, 3);
+    mask_missing("cf_normal_eta", 27, 6);
+    mask_missing("cf_mob_input", 33, 6);
+    mask_missing("cf_mob_actuation", 39, 6);
+    mask_missing("cf_imu_raw", 45, 3);
+    if (!cf_pose_received_) for (size_t i=48; i<51; ++i) msg.data[i]=nan;
+    publisher_->publish(msg);
+    if (received_.at("cf_ee_tracking")) {
+      geometry_msgs::msg::PointStamped fw_cmd;
+      fw_cmd.header.stamp = get_clock()->now(); fw_cmd.header.frame_id = "world";
+      fw_cmd.point.x = ee_tracking_[0]; fw_cmd.point.y = ee_tracking_[1]; fw_cmd.point.z = ee_tracking_[2];
+      fw_cmd_publisher_->publish(fw_cmd);
+    }
   }
 private:
   template<size_t N> static void append(std::vector<double> & row, const std::array<double, N> & a) { row.insert(row.end(), a.begin(), a.end()); }
@@ -107,58 +127,79 @@ private:
       }));
   }
   void poses(const PosesMsg::SharedPtr msg) {
-    for (const auto & p : msg->poses) if (p.name == robot_name_) {
-      mocap_xyz_ = {p.pose.position.x, p.pose.position.y, p.pose.position.z}; mocap_received_ = true; break;
+    for (const auto & p : msg->poses) {
+      if (p.name == robot_name_) {
+        mocap_xyz_ = {p.pose.position.x, p.pose.position.y, p.pose.position.z};
+        mocap_received_ = true;
+      } else if (p.name == "tilted_wall") {
+        // RViz defines the wall's outward normal as local +X.
+        const auto & q = p.pose.orientation;
+        const double norm = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+        if (norm > 1.0e-12) {
+          const double x=q.x/norm, y=q.y/norm, z=q.z/norm, w=q.w/norm;
+          wall_normal_ = {1.0-2.0*(y*y+z*z), 2.0*(x*y+w*z), 2.0*(x*z-w*y)};
+        }
+      }
     }
   }
-  void mocap_debug(const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-    if (msg->data.size() != 4) {
-      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
-        "mocap_receive_debug expected 4 fields, received %zu", msg->data.size());
-      return;
-    }
-    mocap_dt_ms_ = msg->data[0];
-    mocap_count_ = msg->data[1];
-    mocap_source_time_ = msg->data[2];
-    mocap_source_age_ms_ = msg->data[3];
-    received_["mocap_receive_debug"] = true;
+  void cf_pose(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+    const auto & q = msg->pose.orientation;
+    const double norm = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+    if (norm <= 1.0e-12) return;
+    const double x=q.x/norm, y=q.y/norm, z=q.z/norm, w=q.w/norm;
+    const double sinr_cosp = 2.0 * (w*x + y*z);
+    const double cosr_cosp = 1.0 - 2.0 * (x*x + y*y);
+    const double sinp = std::clamp(2.0 * (w*y - z*x), -1.0, 1.0);
+    const double siny_cosp = 2.0 * (w*z + x*y);
+    const double cosy_cosp = 1.0 - 2.0 * (y*y + z*z);
+    constexpr double rad_to_deg = 57.2957795130823208768;
+    attitude_rpy_ = {
+      std::atan2(sinr_cosp, cosr_cosp) * rad_to_deg,
+      std::asin(sinp) * rad_to_deg,
+      std::atan2(siny_cosp, cosy_cosp) * rad_to_deg};
+    cf_pose_received_ = true;
   }
   void check_topics() {
-    if (!mocap_received_) RCLCPP_ERROR(get_logger(), "No /poses entry for '%s'; mocap columns remain NaN", robot_name_.c_str());
+    if (!mocap_received_) RCLCPP_ERROR(get_logger(), "No /poses entry for '%s'; mocap columns remain zero", robot_name_.c_str());
+    if (!cf_pose_received_) RCLCPP_ERROR(get_logger(), "No data on %s/pose; attitude columns remain zero", cf_ns_.c_str());
     for (const auto & x : received_) if (!x.second) RCLCPP_ERROR(get_logger(), "No data on %s/%s; verify YAML and firmware TOC", cf_ns_.c_str(), x.first.c_str());
     startup_timer_->cancel();
   }
   void tag(const std_msgs::msg::String::SharedPtr msg) {
     const std::string clean = sanitize(msg->data); if (clean.empty()) return;
     csv_.flush(); csv_.close(); const auto old = std::filesystem::path(csv_path_);
-    const auto next = old.parent_path() / (timestamp() + "_velocity_" + clean + ".csv");
+    const auto next = old.parent_path() / (timestamp() + "_force_control_" + clean + ".csv");
     std::error_code ec; std::filesystem::rename(old, next, ec);
     if (ec) { RCLCPP_ERROR(get_logger(), "CSV rename failed: %s", ec.message().c_str()); csv_.open(old, std::ios::app); }
     else { csv_path_ = next.string(); csv_.open(next, std::ios::app); RCLCPP_INFO(get_logger(), "Flight-data CSV renamed: %s", csv_path_.c_str()); }
   }
   void write_header() {
-    csv_ << "t_sec,loggerDtMs,mocapRawX,mocapRawY,mocapRawZ,mocapRxDtMs,mocapRxCount,mocapSourceTime,mocapSourceAgeMs,"
-      "extPosX,extPosY,extPosZ,extPosRxDtMs,extPosRxCount,extPosGapCount,extPosGapLastMs,extPosRxDtMaxMs,"
-      "kalmanRtPred,kalmanRtUpdate,kalmanRtFinal,kalmanResetCount,kalmanSupervisorResetCount,stateUpdateCount,loopDtUs,loopDtMaxUs,loopOverrunCount,"
-      "stateX,stateY,stateZ,stateVx,stateVy,stateVz,posRawVx,posRawVy,posRawVz,posVx,posVy,posVz,"
-      "posDeltaX,posDeltaY,posDeltaZ,velocity_rejection_count,velocity_buffer_reset_count,"
-      "vcRawX,vcRawY,vcRawZ,vcX,vcY,vcZ,"
-      "rotOffsetVelX,rotOffsetVelY,rotOffsetVelZ,"
-      "velDesX,velDesY,velDesZ,gyroX,gyroY,gyroZ\n"; csv_.flush();
+    csv_ << "t_sec,loggerDtMs,mocapRawX,mocapRawY,mocapRawZ,"
+      "wallNormalX,wallNormalY,wallNormalZ,"
+      "fwCmdX,fwCmdY,fwCmdZ,fwEePosX,fwEePosY,fwEePosZ,"
+      "forceCmd,mobForceX,mobForceY,mobForceZ,"
+      "mobTorqueX,mobTorqueY,mobTorqueZ,mobForceBarX,mobForceBarY,mobForceBarZ,"
+      "mobForceHatCX,mobForceHatCY,mobForceHatCZ,"
+      "forceNormalEstX,forceNormalEstY,forceNormalEstZ,fwEeVelX,fwEeVelY,fwEeVelZ,"
+      "mobInputForceX,mobInputForceY,mobInputForceZ,mobInputTorqueX,mobInputTorqueY,mobInputTorqueZ,"
+      "motorThrust1,motorThrust2,motorThrust3,motorThrust4,batteryVoltage,etaT,"
+      "imuAccRawX,imuAccRawY,imuAccRawZ,attitudeRoll,attitudePitch,attitudeYaw\n"; csv_.flush();
   }
   std::string csv_dir_, csv_path_, cf_ns_, robot_name_, publish_topic_; std::ofstream csv_;
-  double loop_hz_{50.0}, last_flush_sec_{0.0}; Clock::time_point start_, last_row_;
-  double mocap_count_{0.0}; bool mocap_received_{false};
-  double mocap_dt_ms_{nanv()}, mocap_source_time_{nanv()}, mocap_source_age_ms_{nanv()};
-  std::array<double,3> mocap_xyz_{nanv(),nanv(),nanv()}, ext_xyz_{nanv(),nanv(),nanv()}, loop_{nanv(),nanv(),nanv()}, contact_offset_velocity_{nanv(),nanv(),nanv()}, command_{nanv(),nanv(),nanv()}, gyro_{nanv(),nanv(),nanv()};
-  std::array<double,5> ext_timing_{nanv(),nanv(),nanv(),nanv(),nanv()}, pos_events_{nanv(),nanv(),nanv(),nanv(),nanv()};
-  std::array<double,6> kalman_{nanv(),nanv(),nanv(),nanv(),nanv(),nanv()};
-  std::array<double,6> state_{nanv(),nanv(),nanv(),nanv(),nanv(),nanv()}, pos_velocity_{nanv(),nanv(),nanv(),nanv(),nanv(),nanv()}, contact_velocity_{nanv(),nanv(),nanv(),nanv(),nanv(),nanv()};
+  double loop_hz_{50.0}, startup_check_delay_sec_{15.0}, last_flush_sec_{0.0}; Clock::time_point start_, last_row_;
+  bool mocap_received_{false}, cf_pose_received_{false};
+  std::array<double,3> mocap_xyz_{0.0,0.0,0.0}, wall_normal_{0.0,0.0,0.0}, contact_force_{0.0,0.0,0.0};
+  std::array<double,4> force_raw_{0.0,0.0,0.0,0.0};
+  std::array<double,6> ee_tracking_{0.0,0.0,0.0,0.0,0.0,0.0}, torque_bar_{0.0,0.0,0.0,0.0,0.0,0.0};
+  std::array<double,6> normal_velocity_{0.0,0.0,0.0,0.0,0.0,0.0};
+  std::array<double,6> mob_input_{0.0,0.0,0.0,0.0,0.0,0.0}, mob_actuation_{0.0,0.0,0.0,0.0,0.0,0.0};
+  std::array<double,3> imu_acc_raw_{0.0,0.0,0.0}, attitude_rpy_{0.0,0.0,0.0};
   std::map<std::string,bool> received_; std::vector<rclcpp::Subscription<LogMsg>::SharedPtr> subscriptions_;
   rclcpp::Subscription<PosesMsg>::SharedPtr poses_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr mocap_debug_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr cf_pose_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tag_sub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher_; rclcpp::TimerBase::SharedPtr startup_timer_;
+  rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr fw_cmd_publisher_;
 };
 
 int main(int argc, char ** argv) {

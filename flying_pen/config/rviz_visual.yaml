@@ -9,7 +9,8 @@ rviz_visual:
     wall_pose_name: "tilted_wall"
     robot_pose_name: "cf2"
     robot_pose_topic: "/cf2/pose"
-    wall_marker_frame: "tilted_wall"
+    # Publish wall markers directly in world to avoid a marker/TF discovery race.
+    wall_marker_frame: ""
     wall_scale_x: 0.01
     wall_scale_y: 1.0
     wall_scale_z: 0.6

@@ -9,6 +9,7 @@ data_logging:
     publish_topic: "/data_logging_msg"
     cf_ns: "/cf2"
     loop_hz: 50.0
+    startup_check_delay_sec: 15.0
 
 data_logging_firmware_debug:
   ros__parameters:
