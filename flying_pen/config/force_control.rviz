@@ -173,7 +173,6 @@ Visualization Manager:
       Namespaces:
         wall: true
         wall_center: true
-        wall_normal: true
         wall_outline: true
       Topic:
         Depth: 5
@@ -232,10 +231,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.6500000953674316
+      Pitch: 0.28500044345855713
       Target Frame: world
       Value: Orbit (rviz_default_plugins)
-      Yaw: 1.8600014448165894
+      Yaw: 1.400001883506775
     Saved: ~
 Window Geometry:
   Displays:

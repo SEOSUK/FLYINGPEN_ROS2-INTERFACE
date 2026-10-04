@@ -4,21 +4,21 @@ robot_types:
       su_wrench:
         mass: 0.045000  # observer mass model [kg]
         mobLPF: 1.0  # [Hz], shared critically damped force/torque MOB and matched-filter frequency
-        comOffX: -0.000290  # body-frame CoM offset x [m]
-        comOffY: -0.000183  # body-frame CoM offset y [m]
-        comOffZ: 0.0  # body-frame CoM offset z [m]
-        rOffX: 0.085
+        rOffX: 0.070
         rOffY: 0.0
-        rOffZ: 0.020
+        rOffZ: 0.019
+        comOffX: -0.000587  # body-frame CoM offset x [m]
+        comOffY: -0.000341  # body-frame CoM offset y [m]
+        comOffZ: 0.0  # body-frame CoM offset z [m]
       imu_sensors:
-        accTrimRoll: 0.194789
-        accTrimPitch: -0.239736
+        accTrimRoll: 0.247479
+        accTrimPitch: -0.082635
 
       su_position:
         preloadEn: 1  # 0: velocity-mode yaw follows server command, 1: velocity-mode yaw aligns to estimated normal direction
         preloadGf: 15.0  # effective gain from normal force error to normal velocity command
-#        preloadGv: 0.0  # (LEGACY임. 안씀. 그래도 혹시몰라서 남겨놓음.) effective gain from normal velocity leakage to command
-        preloadNu: 0.3  # [m/s], symmetric saturation bound for normal velocity command
+        preloadGv: 5.0  # (LEGACY임. 안씀. 그래도 혹시몰라서 남겨놓음.) effective gain from normal velocity leakage to command
+        preloadNu: 0.15  # [m/s], symmetric saturation bound for normal velocity command
 
         normBeta: 4.0  # (normal이 굼뜨면 베타 올려) [1/s] beta ≈ 2*pi*f_c, decay rate of the normal-axis memory matrix
         normGamma: 2.0  # (너무 예민하면 감마낮춰)[1/s] normal-estimate tracking gain

@@ -72,6 +72,7 @@ public:
     wall_scale_x_ = this->declare_parameter<double>("wall_scale_x", 0.01);
     wall_scale_y_ = this->declare_parameter<double>("wall_scale_y", 1.0);
     wall_scale_z_ = this->declare_parameter<double>("wall_scale_z", 0.6);
+    wall_publish_period_ = this->declare_parameter<double>("wall_publish_period", 1.0 / 30.0);
     ee_offset_ = declareOffsetParameter();
 
     auto qos = rclcpp::QoS(
@@ -103,7 +104,10 @@ public:
     contact_force_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/contact_force_marker", 10);
     normal_est_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/normal_est_marker", 10);
     ee_velocity_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/ee_velocity_marker", 10);
-    wall_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/wall_marker", 10);
+    // The wall consists of four markers. Keep only the newest samples so RViz
+    // cannot build up a reliable-message backlog behind the live mocap pose.
+    wall_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
+      "/wall_marker", rclcpp::QoS(rclcpp::KeepLast(4)).reliable());
     ee_history_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/ee_trajectory_history", 10);
     contact_history_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       "/rviz/contact_frame_history", 10);
@@ -312,7 +316,14 @@ private:
   {
     const auto stamp = get_clock()->now();
     maybeHandleHistoryViewerReset(stamp);
-    publishWall(stamp);
+    const double wall_period = std::max(1.0e-3, wall_publish_period_);
+    if (
+      last_wall_publish_time_.nanoseconds() == 0 ||
+      (stamp - last_wall_publish_time_).seconds() >= wall_period)
+    {
+      publishWall(stamp);
+      last_wall_publish_time_ = stamp;
+    }
     pruneSmoothTrajectoryHistory(stamp);
     const auto expired_history_ids = pruneFrameHistory(stamp);
 
@@ -1009,8 +1020,10 @@ private:
     normal.lifetime = rclcpp::Duration(0, 0);
     geometry_msgs::msg::Point normal_start;
     geometry_msgs::msg::Point normal_end;
-    normal_start.x = wall_scale_x_ * 0.5;
-    normal_end.x = wall_scale_x_ * 0.5 + 0.25;
+    // Keep the visual reference consistent with data_logging: wall normal is
+    // the tilted-wall rigid body's local -X axis.
+    normal_start.x = -wall_scale_x_ * 0.5;
+    normal_end.x = -wall_scale_x_ * 0.5 - 0.25;
     normal.points = {normal_start, normal_end};
     wall_pub_->publish(normal);
 
@@ -1146,11 +1159,13 @@ private:
   double wall_scale_x_{0.01};
   double wall_scale_y_{1.0};
   double wall_scale_z_{0.6};
+  double wall_publish_period_{1.0 / 30.0};
   int next_history_sample_id_{0};
   size_t last_ee_history_sub_count_{0};
   size_t last_contact_history_sub_count_{0};
   rclcpp::Time last_history_sample_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_history_publish_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_wall_publish_time_{0, 0, RCL_ROS_TIME};
   std::deque<TrajectorySample> smooth_trajectory_history_;
   std::deque<HistorySample> frame_history_;
   bool pose_valid_{false};

@@ -14,3 +14,4 @@ rviz_visual:
     wall_scale_x: 0.01
     wall_scale_y: 1.0
     wall_scale_z: 0.6
+    wall_publish_period: 0.0333333333  # [s], 30 Hz; prevents RViz marker backlog

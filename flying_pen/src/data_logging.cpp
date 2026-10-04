@@ -132,12 +132,15 @@ private:
         mocap_xyz_ = {p.pose.position.x, p.pose.position.y, p.pose.position.z};
         mocap_received_ = true;
       } else if (p.name == "tilted_wall") {
-        // RViz defines the wall's outward normal as local +X.
+        // Define the tilted-wall normal as the rigid body's local -X axis.
         const auto & q = p.pose.orientation;
         const double norm = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
         if (norm > 1.0e-12) {
           const double x=q.x/norm, y=q.y/norm, z=q.z/norm, w=q.w/norm;
-          wall_normal_ = {1.0-2.0*(y*y+z*z), 2.0*(x*y+w*z), 2.0*(x*z-w*y)};
+          wall_normal_ = {
+            -(1.0-2.0*(y*y+z*z)),
+            -2.0*(x*y+w*z),
+            -2.0*(x*z-w*y)};
         }
       }
     }

@@ -558,6 +558,7 @@ private:
 
   std::array<double, 3> rotateOffsetByYawDeg(double yaw_deg) const
   {
+    // Crazyflie yaw is positive in the opposite direction to ROS/world XY.
     const double yaw_rad = yaw_deg * M_PI / 180.0;
     const double c = std::cos(yaw_rad);
     const double s = std::sin(yaw_rad);
