@@ -7,27 +7,28 @@ robot_types:
         rOffX: 0.070
         rOffY: 0.0
         rOffZ: 0.019
-        comOffX: -0.000405  # body-frame CoM offset x [m]
-        comOffY: -0.000346  # body-frame CoM offset y [m]
+        comOffX: -0.000246  # body-frame CoM offset x [m]
+        comOffY: -0.000032  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
       imu_sensors:
-        accTrimRoll: 0.029847
-        accTrimPitch: -0.337776
+        accTrimRoll: -0.048652
+        accTrimPitch: -0.462701
 
       su_position:
+        # 힘제어 쪽
         preloadEn: 1  # 0: velocity-mode yaw follows server command, 1: velocity-mode yaw aligns to estimated normal direction
         preloadGf: 6.5  # effective gain from normal force error to normal velocity command
-        preloadGv: 2.0  # effective gain from normal velocity leakage to command
+        preloadGv: 0.3  # effective gain from normal velocity leakage to command
         preloadNu: 0.30  # [m/s], symmetric saturation bound for normal velocity command
-
-        normBeta: 4.0  # (normal이 굼뜨면 베타 올려) [1/s] beta ≈ 2*pi*f_c, decay rate of the normal-axis memory matrix
-        normGamma: 2.0  # (너무 예민하면 감마낮춰)[1/s] normal-estimate tracking gain
-        normEpsV: 0.0016  # [m^2/s^2], velocity-projection regularization epsilon_v
-        normEpsF: 10.001  # [N], minimum force evidence norm epsilon_f
-
+        # 노멀 추정기 쪽
+        normBeta: 3.0  # (normal이 굼뜨면 베타 올려) [1/s] beta ≈ 2*pi*f_c, decay rate of the normal-axis memory matrix
+        normGamma: 2.5  # (너무 예민하면 감마낮춰)[1/s] normal-estimate tracking gain
+        normEpsV: 0.0004  # [m^2/s^2], velocity-projection regularization epsilon_v
+        normEpsF: 0.01  # [N], minimum force evidence norm epsilon_f
+        # velocity modulation 쪽
         velModEn: 0  # 0: disabled, 1: manual tangential velocity modulation enabled
         velModABar: 0.013  # [m/s^2], geometry-induced normal acceleration bound
-        velModVMin: 0.001  # [m/s], minimum contact speed for curvature update
+        velModVMin: 0.05  # [m/s], minimum contact speed for curvature update
         contactVelLPF: 1.0  # (velocity modulation에도 쓰고 normal estimation에도 씀.) [Hz], shared contact-velocity LPF cutoff
         velModNDotLPF: 0.0  # [Hz], normal-derivative LPF cutoff for curvature estimation
         velModKLPF: 0.0  # [Hz], curvature-estimate LPF cutoff

@@ -30,33 +30,52 @@ robot_types:
           frequency: 5
           vars: [suCalib.state, suCalib.runId, suCalib.accRoll, suCalib.accPitch, suCalib.comX, suCalib.comY]
 
-        # Force-control telemetry. Every block fits in one 26-byte CRTP log packet.
-        cf_ee_tracking:
-          frequency: 30
-          vars: [suPosRef.eeCmdX, suPosRef.eeCmdY, suPosRef.eeCmdZ, suPosRef.eePosX, suPosRef.eePosY, suPosRef.eePosZ]
-        cf_force_raw:
-          frequency: 30
-          vars: [suPosRef.forceCmd, suWrenchObs.fHatWx, suWrenchObs.fHatWy, suWrenchObs.fHatWz]
-        cf_mob_torque_bar:
-          frequency: 30
-          vars: [suWrenchObs.tauLWx, suWrenchObs.tauLWy, suWrenchObs.tauLWz, suThrustEff.fBarX, suThrustEff.fBarY, suThrustEff.fBarZ]
-        cf_contact_force:
-          frequency: 30
-          vars: [suThrustEff.fContactX, suThrustEff.fContactY, suThrustEff.fContactZ]
-        cf_normal_eta:
-          frequency: 30
-          vars: [suPosRef.nEstX, suPosRef.nEstY, suPosRef.nEstZ, suPosRef.vEeX, suPosRef.vEeY, suPosRef.vEeZ]
-        cf_mob_input:
-          frequency: 30
-          vars: [suWrenchObs.fInWx, suWrenchObs.fInWy, suWrenchObs.fInWz, suWrenchObs.tauInBx, suWrenchObs.tauInBy, suWrenchObs.tauInBz]
-        cf_mob_actuation:
-          frequency: 30
-          vars: [suWrenchObs.f1, suWrenchObs.f2, suWrenchObs.f3, suWrenchObs.f4, pm.vbat, suThrustEff.etaHat]
+        # Force-control tuning telemetry (temporarily disabled for normal/kappa tuning).
+        # Every block fits in one 26-byte CRTP log packet.
+        # cf_ee_tracking:
+        #   frequency: 30
+        #   vars: [suPosRef.eeCmdX, suPosRef.eeCmdY, suPosRef.eeCmdZ, suPosRef.eePosX, suPosRef.eePosY, suPosRef.eePosZ]
+        # cf_force_raw:
+        #   frequency: 30
+        #   vars: [suPosRef.forceCmd, suWrenchObs.fHatWx, suWrenchObs.fHatWy, suWrenchObs.fHatWz]
+        # cf_mob_torque_bar:
+        #   frequency: 30
+        #   vars: [suWrenchObs.tauLWx, suWrenchObs.tauLWy, suWrenchObs.tauLWz, suThrustEff.fBarX, suThrustEff.fBarY, suThrustEff.fBarZ]
+        # cf_contact_force:
+        #   frequency: 30
+        #   vars: [suThrustEff.fContactX, suThrustEff.fContactY, suThrustEff.fContactZ]
+        # cf_normal_eta:
+        #   frequency: 30
+        #   vars: [suPosRef.nEstX, suPosRef.nEstY, suPosRef.nEstZ, suPosRef.vEeX, suPosRef.vEeY, suPosRef.vEeZ]
+        # cf_mob_input:
+        #   frequency: 30
+        #   vars: [suWrenchObs.fInWx, suWrenchObs.fInWy, suWrenchObs.fInWz, suWrenchObs.tauInBx, suWrenchObs.tauInBy, suWrenchObs.tauInBz]
+        # cf_mob_actuation:
+        #   frequency: 30
+        #   vars: [suWrenchObs.f1, suWrenchObs.f2, suWrenchObs.f3, suWrenchObs.f4, pm.vbat, suThrustEff.etaHat]
         # Accelerometer before accTrim and after accTrim + onboard LPF.
         # Attitude comes from the already enabled /cf2/pose topic.
-        cf_imu_trim:
-          frequency: 30
-          vars: [accRaw.x, accRaw.y, accRaw.z, acc.x, acc.y, acc.z]
+        # cf_imu_trim:
+        #   frequency: 30
+        #   vars: [accRaw.x, accRaw.y, accRaw.z, acc.x, acc.y, acc.z]
+
+        # Normal/kappa estimator tuning telemetry. Split to respect the
+        # Crazyflie log-block limit of six float variables (24-byte payload).
+        flying_pen_normal_state:
+          frequency: 20
+          vars: [suPosRef.eePosX, suPosRef.eePosY, suPosRef.eePosZ, suPosRef.eeCmdX, suPosRef.eeCmdY, suPosRef.eeCmdZ]
+        flying_pen_normal_evidence:
+          frequency: 20
+          vars: [suVelMod.vcX, suVelMod.vcY, suVelMod.vcZ, suThrustEff.fContactX, suThrustEff.fContactY, suThrustEff.fContactZ]
+        flying_pen_normal_estimator:
+          frequency: 20
+          vars: [suPosRef.nEstX, suPosRef.nEstY, suPosRef.nEstZ, suVelMod.nHatDotX, suVelMod.nHatDotY, suVelMod.nHatDotZ]
+        flying_pen_normal_frame_a:
+          frequency: 20
+          vars: [suPosRef.fnHat, suVelMod.kappaHat, suVelMod.t1X, suVelMod.t1Y, suVelMod.t1Z, suVelMod.t2X]
+        flying_pen_normal_frame_b:
+          frequency: 20
+          vars: [suVelMod.t2Y, suVelMod.t2Z]
 
 
     firmware_params:

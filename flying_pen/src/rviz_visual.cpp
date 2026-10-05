@@ -36,6 +36,10 @@ constexpr std::size_t kForceBarDataSize = kForceBarIndex + 3;
 constexpr std::size_t kVelocityDebugDataSize = 58;
 constexpr std::size_t kForceControlDataSize = 54;
 constexpr std::size_t kVcLpfIndex = 46;
+constexpr std::size_t kNormalAggregateDataSize = 29;
+constexpr std::size_t kNormalAggregateVcIndex = 6;
+constexpr std::size_t kNormalAggregateContactForceIndex = 9;
+constexpr std::size_t kNormalAggregateNormalIndex = 13;
 constexpr double kForceArrowScale = 10.0;
 
 bool isFiniteVector(const Eigen::Vector3d & v)
@@ -60,6 +64,8 @@ public:
     tf_broadcaster_(std::make_shared<tf2_ros::TransformBroadcaster>(this))
   {
     data_topic_ = this->declare_parameter<std::string>("topic", "/data_logging_msg");
+    normal_topic_ = this->declare_parameter<std::string>(
+      "normal_topic", "/cf2/flying_pen/fp_normal");
     history_sample_period_ = this->declare_parameter<double>("history_sample_period", 0.2);
     history_publish_period_ = this->declare_parameter<double>("history_publish_period", 0.10);
     history_duration_ = this->declare_parameter<double>("history_duration", 30.0);
@@ -81,6 +87,9 @@ public:
 
     sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
       data_topic_, qos, std::bind(&RvizVisual::dataCallback, this, std::placeholders::_1));
+    normal_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+      normal_topic_, qos,
+      std::bind(&RvizVisual::normalDataCallback, this, std::placeholders::_1));
     wall_pose_sub_ = this->create_subscription<motion_capture_tracking_interfaces::msg::NamedPoseArray>(
       wall_pose_topic_, qos, std::bind(&RvizVisual::wallPoseCallback, this, std::placeholders::_1));
     robot_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -127,10 +136,52 @@ public:
     vc_lpf_.setZero();
     pose_valid_ = false;
 
-    RCLCPP_INFO(get_logger(), "rviz_visual started. subscribing %s", data_topic_.c_str());
+    RCLCPP_INFO(
+      get_logger(), "rviz_visual started. subscribing %s and %s",
+      data_topic_.c_str(), normal_topic_.c_str());
   }
 
 private:
+  void normalDataCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
+  {
+    if (!msg || msg->data.size() < kNormalAggregateDataSize) {
+      return;
+    }
+
+    const Eigen::Vector3d boom_tip_velocity(
+      msg->data[kNormalAggregateVcIndex],
+      msg->data[kNormalAggregateVcIndex + 1],
+      msg->data[kNormalAggregateVcIndex + 2]);
+    const Eigen::Vector3d contact_force(
+      msg->data[kNormalAggregateContactForceIndex],
+      msg->data[kNormalAggregateContactForceIndex + 1],
+      msg->data[kNormalAggregateContactForceIndex + 2]);
+    const Eigen::Vector3d normal_est(
+      msg->data[kNormalAggregateNormalIndex],
+      msg->data[kNormalAggregateNormalIndex + 1],
+      msg->data[kNormalAggregateNormalIndex + 2]);
+
+    normal_visual_received_ = true;
+    if (isFiniteVector(boom_tip_velocity)) {
+      ee_velocity_ = boom_tip_velocity;
+      ee_velocity_valid_ = true;
+    } else {
+      ee_velocity_valid_ = false;
+      publishDelete(ee_velocity_pub_, "ee_velocity", 0);
+    }
+    if (isFiniteVector(contact_force)) {
+      contact_force_ = contact_force;
+      contact_force_valid_ = true;
+    } else {
+      contact_force_valid_ = false;
+      publishDelete(contact_force_pub_, "mob_hat_c", 0);
+    }
+    if (isFiniteVector(normal_est) && normal_est.norm() > 1.0e-9) {
+      normal_est_ = normal_est;
+      normal_est_valid_ = true;
+    }
+  }
+
   bool updateRobotPose(const geometry_msgs::msg::Pose & pose)
   {
     if (!isFinitePose(pose)) {
@@ -201,12 +252,14 @@ private:
       else { raw_mob_force_valid_ = false; publishDelete(raw_mob_force_pub_, "mob_raw", 0); }
       if (isFiniteVector(force_bar)) { force_bar_ = force_bar; force_bar_valid_ = true; }
       else { force_bar_valid_ = false; publishDelete(force_bar_pub_, "mob_bar", 0); }
-      if (isFiniteVector(contact_force)) { contact_force_ = contact_force; contact_force_valid_ = true; }
-      else { contact_force_valid_ = false; publishDelete(contact_force_pub_, "mob_hat_c", 0); }
-      if (isFiniteVector(normal_est) && normal_est.norm() > 1.0e-9) { normal_est_ = normal_est; normal_est_valid_ = true; }
-      else { normal_est_valid_ = false; publishDelete(normal_est_pub_, "normal_estimation", 0); }
-      if (isFiniteVector(ee_velocity)) { ee_velocity_ = ee_velocity; ee_velocity_valid_ = true; }
-      else { ee_velocity_valid_ = false; publishDelete(ee_velocity_pub_, "ee_velocity", 0); }
+      if (!normal_visual_received_) {
+        if (isFiniteVector(contact_force)) { contact_force_ = contact_force; contact_force_valid_ = true; }
+        else { contact_force_valid_ = false; publishDelete(contact_force_pub_, "mob_hat_c", 0); }
+        if (isFiniteVector(normal_est) && normal_est.norm() > 1.0e-9) { normal_est_ = normal_est; normal_est_valid_ = true; }
+        else { normal_est_valid_ = false; publishDelete(normal_est_pub_, "normal_estimation", 0); }
+        if (isFiniteVector(ee_velocity)) { ee_velocity_ = ee_velocity; ee_velocity_valid_ = true; }
+        else { ee_velocity_valid_ = false; publishDelete(ee_velocity_pub_, "ee_velocity", 0); }
+      }
       return;
     }
     if (msg->data.size() >= kVelocityDebugDataSize && msg->data.size() < 82) {
@@ -1114,6 +1167,7 @@ private:
   };
 
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr normal_sub_;
   rclcpp::Subscription<motion_capture_tracking_interfaces::msg::NamedPoseArray>::SharedPtr wall_pose_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr robot_pose_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr clear_history_srv_;
@@ -1146,6 +1200,7 @@ private:
   Eigen::Vector3d vc_lpf_;
   std::array<double, 3> ee_offset_;
   std::string data_topic_;
+  std::string normal_topic_;
   std::string wall_pose_topic_;
   std::string wall_pose_name_;
   std::string robot_pose_name_;
@@ -1178,6 +1233,7 @@ private:
   bool contact_force_valid_{false};
   bool normal_est_valid_{false};
   bool ee_velocity_valid_{false};
+  bool normal_visual_received_{false};
 };
 
 int main(int argc, char* argv[])

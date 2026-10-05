@@ -5,6 +5,8 @@
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include <crazyflie_interfaces/msg/log_data_generic.hpp>
+#include <crazyflie_interfaces/msg/position.hpp>
+#include <crazyflie_interfaces/msg/position_control.hpp>
 #include <motion_capture_tracking_interfaces/msg/named_pose_array.hpp>
 #include <algorithm>
 #include <array>
@@ -52,10 +54,15 @@ public:
     publish_topic_ = declare_parameter<std::string>("publish_topic", "/data_logging_msg");
     robot_name_ = cf_ns_; while (!robot_name_.empty() && robot_name_.front() == '/') robot_name_.erase(robot_name_.begin());
     std::filesystem::create_directories(csv_dir_);
-    csv_path_ = (std::filesystem::path(csv_dir_) / (timestamp() + "_force_control.csv")).string();
+    const std::string start_stamp = timestamp();
+    csv_path_ = (std::filesystem::path(csv_dir_) / (start_stamp + "_force_control.csv")).string();
+    normal_csv_path_ = (std::filesystem::path(csv_dir_) / ("flyingpen_normal_" + start_stamp + ".csv")).string();
     csv_.open(csv_path_, std::ios::out | std::ios::trunc);
     if (!csv_) throw std::runtime_error("Cannot open " + csv_path_);
+    normal_csv_.open(normal_csv_path_, std::ios::out | std::ios::trunc);
+    if (!normal_csv_) throw std::runtime_error("Cannot open " + normal_csv_path_);
     write_header();
+    write_normal_header();
     poses_sub_ = create_subscription<PosesMsg>("/poses", rclcpp::SensorDataQoS(), std::bind(&DataLoggingNode::poses, this, _1));
     cf_pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
       cf_ns_ + "/pose", 10, std::bind(&DataLoggingNode::cf_pose, this, _1));
@@ -67,15 +74,27 @@ public:
     bind("cf_mob_input", 6, &DataLoggingNode::mob_input_);
     bind("cf_mob_actuation", 6, &DataLoggingNode::mob_actuation_);
     bind("cf_imu_trim", 6, &DataLoggingNode::imu_acc_trim_);
+    bind("flying_pen_normal_state", 6, &DataLoggingNode::normal_state_);
+    bind("flying_pen_normal_evidence", 6, &DataLoggingNode::normal_evidence_);
+    bind("flying_pen_normal_estimator", 6, &DataLoggingNode::normal_estimator_);
+    bind("flying_pen_normal_frame_a", 6, &DataLoggingNode::normal_frame_a_);
+    bind("flying_pen_normal_frame_b", 2, &DataLoggingNode::normal_frame_b_);
+    cmd_position_sub_ = create_subscription<crazyflie_interfaces::msg::Position>(
+      cf_ns_ + "/cmd_position", 10, std::bind(&DataLoggingNode::cmd_position, this, _1));
+    position_control_sub_ = create_subscription<crazyflie_interfaces::msg::PositionControl>(
+      cf_ns_ + "/cmd_position_control", 10, std::bind(&DataLoggingNode::position_control, this, _1));
     tag_sub_ = create_subscription<std_msgs::msg::String>("/flying_pen/debug_log_filename_tag", 10, std::bind(&DataLoggingNode::tag, this, _1));
     publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(publish_topic_, 10);
+    normal_publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+      cf_ns_ + "/flying_pen/fp_normal", 10);
     fw_cmd_publisher_ = create_publisher<geometry_msgs::msg::PointStamped>("/fw_cmd", 10);
     startup_timer_ = create_wall_timer(
       std::chrono::duration<double>(std::max(1.0, startup_check_delay_sec_)),
       std::bind(&DataLoggingNode::check_topics, this));
     RCLCPP_INFO(get_logger(), "Flight-data CSV: %s", csv_path_.c_str());
+    RCLCPP_INFO(get_logger(), "Normal-estimator CSV: %s", normal_csv_path_.c_str());
   }
-  ~DataLoggingNode() override { csv_.flush(); }
+  ~DataLoggingNode() override { csv_.flush(); normal_csv_.flush(); }
   double loop_hz() const { return loop_hz_; }
   void write_row() {
     const auto now = Clock::now();
@@ -107,6 +126,7 @@ public:
     mask_missing("cf_imu_trim", 45, 6);
     if (!cf_pose_received_) for (size_t i=51; i<54; ++i) msg.data[i]=nan;
     publisher_->publish(msg);
+    write_normal_row(t, dt_ms);
     if (received_.at("cf_ee_tracking")) {
       geometry_msgs::msg::PointStamped fw_cmd;
       fw_cmd.header.stamp = get_clock()->now(); fw_cmd.header.frame_id = "world";
@@ -162,10 +182,40 @@ private:
       std::atan2(siny_cosp, cosy_cosp) * rad_to_deg};
     cf_pose_received_ = true;
   }
+  void cmd_position(const crazyflie_interfaces::msg::Position::SharedPtr msg) {
+    if (!msg) return;
+    // In contact-frame velocity mode firmware interprets Position.y/z as u1/u2.
+    normal_u1_des_ = msg->y;
+    normal_u2_des_ = msg->z;
+    cmd_position_received_ = true;
+  }
+  void position_control(const crazyflie_interfaces::msg::PositionControl::SharedPtr msg) {
+    if (!msg) return;
+    normal_force_desired_ = msg->force_desired;
+    normal_velocity_mode_ =
+      msg->position_mode == crazyflie_interfaces::msg::PositionControl::MODE_VELOCITY;
+    position_control_received_ = true;
+  }
   void check_topics() {
     if (!mocap_received_) RCLCPP_ERROR(get_logger(), "No /poses entry for '%s'; mocap columns remain zero", robot_name_.c_str());
     if (!cf_pose_received_) RCLCPP_ERROR(get_logger(), "No data on %s/pose; attitude columns remain zero", cf_ns_.c_str());
-    for (const auto & x : received_) if (!x.second) RCLCPP_ERROR(get_logger(), "No data on %s/%s; verify YAML and firmware TOC", cf_ns_.c_str(), x.first.c_str());
+    // The force-control debug blocks are optional and may be intentionally
+    // disabled in crazyflies.yaml. Only the blocks required by the active
+    // normal-estimator logger should fail the startup check.
+    constexpr std::array<const char *, 5> required_normal_topics = {
+      "flying_pen_normal_state",
+      "flying_pen_normal_evidence",
+      "flying_pen_normal_estimator",
+      "flying_pen_normal_frame_a",
+      "flying_pen_normal_frame_b"};
+    for (const char * topic : required_normal_topics) {
+      const auto it = received_.find(topic);
+      if (it == received_.end() || !it->second) {
+        RCLCPP_ERROR(
+          get_logger(), "No data on %s/%s; verify YAML and firmware TOC",
+          cf_ns_.c_str(), topic);
+      }
+    }
     startup_timer_->cancel();
   }
   void tag(const std_msgs::msg::String::SharedPtr msg) {
@@ -175,6 +225,19 @@ private:
     std::error_code ec; std::filesystem::rename(old, next, ec);
     if (ec) { RCLCPP_ERROR(get_logger(), "CSV rename failed: %s", ec.message().c_str()); csv_.open(old, std::ios::app); }
     else { csv_path_ = next.string(); csv_.open(next, std::ios::app); RCLCPP_INFO(get_logger(), "Flight-data CSV renamed: %s", csv_path_.c_str()); }
+
+    normal_csv_.flush(); normal_csv_.close();
+    const auto normal_old = std::filesystem::path(normal_csv_path_);
+    const auto normal_next = normal_old.parent_path() /
+      ("flyingpen_normal_" + timestamp() + "_" + clean + ".csv");
+    ec.clear(); std::filesystem::rename(normal_old, normal_next, ec);
+    if (ec) {
+      RCLCPP_ERROR(get_logger(), "Normal CSV rename failed: %s", ec.message().c_str());
+      normal_csv_.open(normal_old, std::ios::app);
+    } else {
+      normal_csv_path_ = normal_next.string(); normal_csv_.open(normal_next, std::ios::app);
+      RCLCPP_INFO(get_logger(), "Normal-estimator CSV renamed: %s", normal_csv_path_.c_str());
+    }
   }
   void write_header() {
     csv_ << "t_sec,loggerDtMs,mocapRawX,mocapRawY,mocapRawZ,"
@@ -189,21 +252,90 @@ private:
       "imuAccRawX,imuAccRawY,imuAccRawZ,imuAccTrimmedX,imuAccTrimmedY,imuAccTrimmedZ,"
       "attitudeRoll,attitudePitch,attitudeYaw\n"; csv_.flush();
   }
-  std::string csv_dir_, csv_path_, cf_ns_, robot_name_, publish_topic_; std::ofstream csv_;
+  void write_normal_header() {
+    normal_csv_ << "t_sec,loggerDtMs,vehiclePosX,vehiclePosY,vehiclePosZ,"
+      "attitudeRoll,attitudePitch,attitudeYaw,"
+      "fp_normal_eePosX,fp_normal_eePosY,fp_normal_eePosZ,"
+      "fp_normal_eeCmdX,fp_normal_eeCmdY,fp_normal_eeCmdZ,"
+      "fp_normal_vcX,fp_normal_vcY,fp_normal_vcZ,"
+      "fp_normal_fcHatX,fp_normal_fcHatY,fp_normal_fcHatZ,"
+      "fp_normal_fnHat,"
+      "fp_normal_nHatX,fp_normal_nHatY,fp_normal_nHatZ,"
+      "fp_normal_nDotX,fp_normal_nDotY,fp_normal_nDotZ,"
+      "fp_normal_kappaHat,"
+      "fp_normal_t1X,fp_normal_t1Y,fp_normal_t1Z,"
+      "fp_normal_t2X,fp_normal_t2Y,fp_normal_t2Z,"
+      "u1_des,u2_des,forceDesired\n";
+    normal_csv_.flush();
+  }
+  void write_normal_row(double t, double dt_ms) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const auto value = [this, nan](const std::string & topic, double sample) {
+      const auto it = received_.find(topic);
+      return (it != received_.end() && it->second) ? sample : nan;
+    };
+    std::vector<double> row;
+    row.reserve(37);
+    row.push_back(t); row.push_back(dt_ms);
+    for (double x : mocap_xyz_) row.push_back(mocap_received_ ? x : nan);
+    for (double x : attitude_rpy_) row.push_back(cf_pose_received_ ? x : nan);
+    for (double x : normal_state_) row.push_back(value("flying_pen_normal_state", x));
+    for (double x : normal_evidence_) row.push_back(value("flying_pen_normal_evidence", x));
+    row.push_back(value("flying_pen_normal_frame_a", normal_frame_a_[0]));
+    for (double x : normal_estimator_) {
+      row.push_back(value("flying_pen_normal_estimator", x));
+    }
+    row.push_back(value("flying_pen_normal_frame_a", normal_frame_a_[1]));
+    for (size_t i = 2; i < normal_frame_a_.size(); ++i) {
+      row.push_back(value("flying_pen_normal_frame_a", normal_frame_a_[i]));
+    }
+    for (double x : normal_frame_b_) row.push_back(value("flying_pen_normal_frame_b", x));
+    const bool contact_velocity_command =
+      cmd_position_received_ && position_control_received_ && normal_velocity_mode_;
+    row.push_back(contact_velocity_command ? normal_u1_des_ : nan);
+    row.push_back(contact_velocity_command ? normal_u2_des_ : nan);
+    row.push_back(position_control_received_ ? normal_force_desired_ : nan);
+
+    normal_csv_ << std::fixed << std::setprecision(9);
+    for (size_t i = 0; i < row.size(); ++i) normal_csv_ << (i ? "," : "") << row[i];
+    normal_csv_ << '\n';
+    if (t - normal_last_flush_sec_ >= 1.0) {
+      normal_csv_.flush();
+      normal_last_flush_sec_ = t;
+    }
+
+    std_msgs::msg::Float64MultiArray aggregate;
+    aggregate.data.assign(row.begin() + 8, row.end());
+    normal_publisher_->publish(aggregate);
+  }
+  std::string csv_dir_, csv_path_, normal_csv_path_, cf_ns_, robot_name_, publish_topic_;
+  std::ofstream csv_, normal_csv_;
   double loop_hz_{50.0}, startup_check_delay_sec_{15.0}, last_flush_sec_{0.0}; Clock::time_point start_, last_row_;
+  double normal_last_flush_sec_{0.0};
   bool mocap_received_{false}, cf_pose_received_{false};
+  bool cmd_position_received_{false}, position_control_received_{false};
+  bool normal_velocity_mode_{false};
+  double normal_u1_des_{0.0}, normal_u2_des_{0.0}, normal_force_desired_{0.0};
   std::array<double,3> mocap_xyz_{0.0,0.0,0.0}, wall_normal_{0.0,0.0,0.0}, contact_force_{0.0,0.0,0.0};
   std::array<double,4> force_raw_{0.0,0.0,0.0,0.0};
-  std::array<double,6> ee_tracking_{0.0,0.0,0.0,0.0,0.0,0.0}, torque_bar_{0.0,0.0,0.0,0.0,0.0,0.0};
-  std::array<double,6> normal_velocity_{0.0,0.0,0.0,0.0,0.0,0.0};
-  std::array<double,6> mob_input_{0.0,0.0,0.0,0.0,0.0,0.0}, mob_actuation_{0.0,0.0,0.0,0.0,0.0,0.0};
+  std::array<double,6> ee_tracking_{0.0,0.0,0.0,0.0,0.0}, torque_bar_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,6> normal_velocity_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,6> mob_input_{0.0,0.0,0.0,0.0,0.0}, mob_actuation_{0.0,0.0,0.0,0.0,0.0};
   std::array<double,6> imu_acc_trim_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,6> normal_state_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,6> normal_evidence_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,6> normal_estimator_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,6> normal_frame_a_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,2> normal_frame_b_{0.0,0.0};
   std::array<double,3> attitude_rpy_{0.0,0.0,0.0};
   std::map<std::string,bool> received_; std::vector<rclcpp::Subscription<LogMsg>::SharedPtr> subscriptions_;
   rclcpp::Subscription<PosesMsg>::SharedPtr poses_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr cf_pose_sub_;
+  rclcpp::Subscription<crazyflie_interfaces::msg::Position>::SharedPtr cmd_position_sub_;
+  rclcpp::Subscription<crazyflie_interfaces::msg::PositionControl>::SharedPtr position_control_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tag_sub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher_; rclcpp::TimerBase::SharedPtr startup_timer_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher_, normal_publisher_;
+  rclcpp::TimerBase::SharedPtr startup_timer_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr fw_cmd_publisher_;
 };
 
