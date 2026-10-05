@@ -103,14 +103,14 @@ robot_types:
       # - Position/velocity filters default ON. Attitude/rate filters default OFF on cf21bl.
       # - Feedforward term is added as outFF = kff * desired.
       posCtlPid:
-        xKp: 1.0 # Default: 2.0
-        yKp: 1.0 # Default: 2.0
+        xKp: 1.2 # Default: 2.0
+        yKp: 1.2 # Default: 2.0
         zKp: 2.0 # Default: 2.0
         xKi: 0.0 # Default: 0.0
         yKi: 0.0 # Default: 0.0
         zKi: 0.0 # Default: 0.5
-        xKd: 0.10 # Default: 0.0
-        yKd: 0.10 # Default: 0.0
+        xKd: 0.12 # Default: 0.0
+        yKd: 0.12 # Default: 0.0
         zKd: 0.2 # Default: 0.0
         xKff: 0.0 # Default: 0.0
         yKff: 0.0 # Default: 0.0

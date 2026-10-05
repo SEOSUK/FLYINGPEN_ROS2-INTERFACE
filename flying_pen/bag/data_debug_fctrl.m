@@ -50,14 +50,14 @@ for k=1:3
 end
 xlabel('t [s]'); sgtitle('Firmware EE position tracking');
 
-%% Figure 2 - Force command and MOB force X
-figure('Name','Force command and MOB force X');
+%% Figure 2 - Force command and reconstructed contact force X (hat C)
+figure('Name','Force command and reconstructed contact force X (hat C)');
 subplot(2,1,1);
 plot(t,safeColumn(T,"forceCmd"),'LineWidth',2); hold on;
-plot(t,-safeColumn(T,"mobForceX"),'LineWidth',2); grid on;
+plot(t,-safeColumn(T,"mobForceHatCX"),'LineWidth',2); grid on;
 ylabel('force [N]');
-legend('force command','-MOB F_x');
-title('Force command vs. sign-inverted MOB force X');
+legend('force command','-hat C F_x');
+title('Force command vs. sign-inverted reconstructed contact force X');
 subplot(2,1,2);
 plot(t,safeColumn(T,"fwCmdX"),'LineWidth',2); hold on;
 plot(t,safeColumn(T,"fwEePosX"),'LineWidth',2); grid on;
