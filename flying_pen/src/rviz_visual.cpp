@@ -40,6 +40,9 @@ constexpr std::size_t kNormalAggregateDataSize = 29;
 constexpr std::size_t kNormalAggregateVcIndex = 6;
 constexpr std::size_t kNormalAggregateContactForceIndex = 9;
 constexpr std::size_t kNormalAggregateNormalIndex = 13;
+constexpr std::size_t kNormalAggregateRvizForcesDataSize = 35;
+constexpr std::size_t kNormalAggregateRawForceIndex = 29;
+constexpr std::size_t kNormalAggregateForceBarIndex = 32;
 constexpr double kForceArrowScale = 10.0;
 
 bool isFiniteVector(const Eigen::Vector3d & v)
@@ -79,6 +82,20 @@ public:
     wall_scale_y_ = this->declare_parameter<double>("wall_scale_y", 1.0);
     wall_scale_z_ = this->declare_parameter<double>("wall_scale_z", 0.6);
     wall_publish_period_ = this->declare_parameter<double>("wall_publish_period", 1.0 / 30.0);
+    reference_surface_enabled_ = this->declare_parameter<bool>("reference_surface.enabled", true);
+    reference_surface_origin_ = this->declare_parameter<std::vector<double>>(
+      "reference_surface.origin", std::vector<double>{1.4493, -0.0956, 0.7028});
+    reference_surface_initial_tangent_deg_ = this->declare_parameter<double>(
+      "reference_surface.initial_tangent_deg", 120.0);
+    reference_surface_plane_length_ = this->declare_parameter<double>(
+      "reference_surface.plane_length", 0.25);
+    reference_surface_curve_radius_ = this->declare_parameter<double>(
+      "reference_surface.curve_radius", 0.580);
+    reference_surface_turn_angle_deg_ = this->declare_parameter<double>(
+      "reference_surface.turn_angle_deg", 30.0);
+    reference_surface_y_half_width_ = this->declare_parameter<double>(
+      "reference_surface.y_half_width", 0.20);
+    reference_surface_alpha_ = this->declare_parameter<double>("reference_surface.alpha", 0.22);
     ee_offset_ = declareOffsetParameter();
 
     auto qos = rclcpp::QoS(
@@ -117,6 +134,8 @@ public:
     // cannot build up a reliable-message backlog behind the live mocap pose.
     wall_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
       "/wall_marker", rclcpp::QoS(rclcpp::KeepLast(4)).reliable());
+    reference_surface_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
+      "/reference_surface_marker", 10);
     ee_history_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/ee_trajectory_history", 10);
     contact_history_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       "/rviz/contact_frame_history", 10);
@@ -179,6 +198,31 @@ private:
     if (isFiniteVector(normal_est) && normal_est.norm() > 1.0e-9) {
       normal_est_ = normal_est;
       normal_est_valid_ = true;
+    }
+    if (msg->data.size() >= kNormalAggregateRvizForcesDataSize) {
+      normal_rviz_forces_received_ = true;
+      const Eigen::Vector3d raw_force(
+        msg->data[kNormalAggregateRawForceIndex],
+        msg->data[kNormalAggregateRawForceIndex + 1],
+        msg->data[kNormalAggregateRawForceIndex + 2]);
+      const Eigen::Vector3d force_bar(
+        msg->data[kNormalAggregateForceBarIndex],
+        msg->data[kNormalAggregateForceBarIndex + 1],
+        msg->data[kNormalAggregateForceBarIndex + 2]);
+      if (isFiniteVector(raw_force)) {
+        raw_mob_force_ = raw_force;
+        raw_mob_force_valid_ = true;
+      } else {
+        raw_mob_force_valid_ = false;
+        publishDelete(raw_mob_force_pub_, "mob_raw", 0);
+      }
+      if (isFiniteVector(force_bar)) {
+        force_bar_ = force_bar;
+        force_bar_valid_ = true;
+      } else {
+        force_bar_valid_ = false;
+        publishDelete(force_bar_pub_, "mob_bar", 0);
+      }
     }
   }
 
@@ -248,10 +292,12 @@ private:
       const Eigen::Vector3d ee_velocity(msg->data[30], msg->data[31], msg->data[32]);
       if (isFiniteVector(fw_cmd)) { fw_cmd_pos_ = fw_cmd; fw_cmd_valid_ = true; }
       else { fw_cmd_valid_ = false; publishDelete(fw_cmd_pub_, "fw_cmd_position", 0); }
-      if (isFiniteVector(raw_mob_force)) { raw_mob_force_ = raw_mob_force; raw_mob_force_valid_ = true; }
-      else { raw_mob_force_valid_ = false; publishDelete(raw_mob_force_pub_, "mob_raw", 0); }
-      if (isFiniteVector(force_bar)) { force_bar_ = force_bar; force_bar_valid_ = true; }
-      else { force_bar_valid_ = false; publishDelete(force_bar_pub_, "mob_bar", 0); }
+      if (!normal_rviz_forces_received_) {
+        if (isFiniteVector(raw_mob_force)) { raw_mob_force_ = raw_mob_force; raw_mob_force_valid_ = true; }
+        else { raw_mob_force_valid_ = false; publishDelete(raw_mob_force_pub_, "mob_raw", 0); }
+        if (isFiniteVector(force_bar)) { force_bar_ = force_bar; force_bar_valid_ = true; }
+        else { force_bar_valid_ = false; publishDelete(force_bar_pub_, "mob_bar", 0); }
+      }
       if (!normal_visual_received_) {
         if (isFiniteVector(contact_force)) { contact_force_ = contact_force; contact_force_valid_ = true; }
         else { contact_force_valid_ = false; publishDelete(contact_force_pub_, "mob_hat_c", 0); }
@@ -375,6 +421,7 @@ private:
       (stamp - last_wall_publish_time_).seconds() >= wall_period)
     {
       publishWall(stamp);
+      publishReferenceSurface(stamp);
       last_wall_publish_time_ = stamp;
     }
     pruneSmoothTrajectoryHistory(stamp);
@@ -988,6 +1035,92 @@ private:
     pub->publish(marker);
   }
 
+  void publishReferenceSurface(const rclcpp::Time & stamp)
+  {
+    visualization_msgs::msg::Marker marker;
+    marker.header.stamp = stamp;
+    marker.header.frame_id = "world";
+    marker.ns = "reference_surface";
+    marker.id = 0;
+    marker.pose.orientation.w = 1.0;
+    marker.lifetime = rclcpp::Duration(0, 0);
+
+    if (!reference_surface_enabled_) {
+      marker.action = visualization_msgs::msg::Marker::DELETE;
+      reference_surface_pub_->publish(marker);
+      return;
+    }
+    if (
+      reference_surface_origin_.size() != 3 ||
+      !std::isfinite(reference_surface_plane_length_) || reference_surface_plane_length_ <= 0.0 ||
+      !std::isfinite(reference_surface_curve_radius_) || reference_surface_curve_radius_ <= 0.0 ||
+      !std::isfinite(reference_surface_y_half_width_) || reference_surface_y_half_width_ <= 0.0)
+    {
+      return;
+    }
+
+    std::vector<Eigen::Vector3d> centerline;
+    centerline.reserve(128);
+    Eigen::Vector3d position(
+      reference_surface_origin_[0], reference_surface_origin_[1], reference_surface_origin_[2]);
+    double theta = reference_surface_initial_tangent_deg_ * kDegToRad;
+    const double turn = -std::abs(reference_surface_turn_angle_deg_) * kDegToRad;
+    constexpr int samples_per_section = 24;
+
+    for (int section = 0; section < 5; ++section) {
+      const bool straight = (section % 2) == 0;
+      for (int sample = 0; sample < samples_per_section; ++sample) {
+        const double fraction = static_cast<double>(sample) / samples_per_section;
+        if (straight) {
+          const double distance = fraction * reference_surface_plane_length_;
+          centerline.emplace_back(
+            position.x() + distance * std::cos(theta), position.y(),
+            position.z() + distance * std::sin(theta));
+        } else {
+          const double local_turn = fraction * turn;
+          const double curvature = -1.0 / reference_surface_curve_radius_;
+          centerline.emplace_back(
+            position.x() + (std::sin(theta + local_turn) - std::sin(theta)) / curvature,
+            position.y(),
+            position.z() + (-std::cos(theta + local_turn) + std::cos(theta)) / curvature);
+        }
+      }
+      if (straight) {
+        position.x() += reference_surface_plane_length_ * std::cos(theta);
+        position.z() += reference_surface_plane_length_ * std::sin(theta);
+      } else {
+        const double curvature = -1.0 / reference_surface_curve_radius_;
+        position.x() += (std::sin(theta + turn) - std::sin(theta)) / curvature;
+        position.z() += (-std::cos(theta + turn) + std::cos(theta)) / curvature;
+        theta += turn;
+      }
+    }
+    centerline.push_back(position);
+
+    marker.type = visualization_msgs::msg::Marker::TRIANGLE_LIST;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = marker.scale.y = marker.scale.z = 1.0;
+    marker.color.r = 0.35f;
+    marker.color.g = 0.65f;
+    marker.color.b = 0.90f;
+    marker.color.a = static_cast<float>(std::clamp(reference_surface_alpha_, 0.0, 1.0));
+    const auto make_point = [](const Eigen::Vector3d & center, const double y_offset) {
+      geometry_msgs::msg::Point point;
+      point.x = center.x();
+      point.y = center.y() + y_offset;
+      point.z = center.z();
+      return point;
+    };
+    for (std::size_t i = 0; i + 1 < centerline.size(); ++i) {
+      const auto lower0 = make_point(centerline[i], -reference_surface_y_half_width_);
+      const auto upper0 = make_point(centerline[i], reference_surface_y_half_width_);
+      const auto lower1 = make_point(centerline[i + 1], -reference_surface_y_half_width_);
+      const auto upper1 = make_point(centerline[i + 1], reference_surface_y_half_width_);
+      marker.points.insert(marker.points.end(), {lower0, upper0, upper1, lower0, upper1, lower1});
+    }
+    reference_surface_pub_->publish(marker);
+  }
+
   void publishWall(const rclcpp::Time& stamp)
   {
     const bool use_tf_frame = !wall_marker_frame_.empty();
@@ -1182,6 +1315,7 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr normal_est_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr ee_velocity_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr wall_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr reference_surface_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr ee_history_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr contact_history_pub_;
 
@@ -1215,6 +1349,14 @@ private:
   double wall_scale_y_{1.0};
   double wall_scale_z_{0.6};
   double wall_publish_period_{1.0 / 30.0};
+  bool reference_surface_enabled_{true};
+  std::vector<double> reference_surface_origin_{1.4493, -0.0956, 0.7028};
+  double reference_surface_initial_tangent_deg_{120.0};
+  double reference_surface_plane_length_{0.25};
+  double reference_surface_curve_radius_{0.580};
+  double reference_surface_turn_angle_deg_{30.0};
+  double reference_surface_y_half_width_{0.20};
+  double reference_surface_alpha_{0.22};
   int next_history_sample_id_{0};
   size_t last_ee_history_sub_count_{0};
   size_t last_contact_history_sub_count_{0};
@@ -1234,6 +1376,7 @@ private:
   bool normal_est_valid_{false};
   bool ee_velocity_valid_{false};
   bool normal_visual_received_{false};
+  bool normal_rviz_forces_received_{false};
 };
 
 int main(int argc, char* argv[])

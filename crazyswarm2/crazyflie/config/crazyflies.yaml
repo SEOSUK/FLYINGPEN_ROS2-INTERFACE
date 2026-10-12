@@ -76,6 +76,18 @@ robot_types:
         flying_pen_normal_frame_b:
           frequency: 20
           vars: [suVelMod.t2Y, suVelMod.t2Z]
+        # RViz-only force vectors. Pack f_raw and fbar into one full CRTP
+        # block to avoid enabling two larger force-control debug blocks.
+        flying_pen_rviz_forces:
+          frequency: 20
+          vars: [suWrenchObs.fHatWx, suWrenchObs.fHatWy, suWrenchObs.fHatWz, suThrustEff.fBarX, suThrustEff.fBarY, suThrustEff.fBarZ]
+        # Offline thrust-effectiveness/contact-force reconstruction inputs.
+        flying_pen_mob_recovery:
+          frequency: 20
+          vars: [suWrenchObs.tauLWx, suWrenchObs.tauLWy, suWrenchObs.tauLWz, suThrustEff.etaHat, pm.vbat]
+        flying_pen_mob_input:
+          frequency: 20
+          vars: [suWrenchObs.fInWx, suWrenchObs.fInWy, suWrenchObs.fInWz, suWrenchObs.tauInBx, suWrenchObs.tauInBy, suWrenchObs.tauInBz]
 
 
     firmware_params:

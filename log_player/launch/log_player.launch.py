@@ -3,10 +3,14 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    standalone_stack = LaunchConfiguration("standalone_stack")
     log_player_share = Path(get_package_share_directory("log_player"))
     flying_pen_share = Path(get_package_share_directory("flying_pen"))
     crazyflie_share = Path(get_package_share_directory("crazyflie"))
@@ -77,6 +81,7 @@ def generate_launch_description():
             name="robot_state_publisher",
             output="screen",
             parameters=[{"robot_description": robot_description}],
+            condition=IfCondition(standalone_stack),
         ),
         Node(
             package="flying_pen",
@@ -84,6 +89,7 @@ def generate_launch_description():
             name="rviz_visual",
             output="screen",
             parameters=[str(rviz_visual_params), {"end_effector_offset": shared_ee_offset}],
+            condition=IfCondition(standalone_stack),
         ),
     ]
 
@@ -98,4 +104,14 @@ def generate_launch_description():
             )
         )
 
-    return LaunchDescription(nodes)
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            "standalone_stack",
+            default_value="false",
+            description=(
+                "Start robot_state_publisher and rviz_visual inside log_player. "
+                "Keep false when flying_pen launcher is already running."
+            ),
+        ),
+        *nodes,
+    ])

@@ -219,6 +219,27 @@ private:
 
   std::vector<double> packRow(const std::vector<std::string> & cells) const
   {
+    // Current flying_pen data_logging output.  Preserve its exact 54-value
+    // wire layout so live and replayed /data_logging_msg are interchangeable.
+    const bool is_force_control_layout =
+      headerIndex_.count("loggerDtMs") > 0 &&
+      headerIndex_.count("mocapRawX") > 0 &&
+      headerIndex_.count("fwCmdX") > 0 &&
+      headerIndex_.count("mobForceHatCX") > 0 &&
+      headerIndex_.count("attitudeYaw") > 0;
+    if (is_force_control_layout) {
+      std::vector<double> out;
+      out.reserve(cells.size());
+      for (const auto & cell : cells) {
+        try {
+          out.push_back(parseScalar(cell));
+        } catch (const std::exception &) {
+          out.push_back(std::numeric_limits<double>::quiet_NaN());
+        }
+      }
+      return out;
+    }
+
     const bool is_debug_layout = headerIndex_.count("normalEst_x") > 0 && headerIndex_.count("fwCmd_x") > 0;
     if (is_debug_layout) {
       std::vector<double> out;

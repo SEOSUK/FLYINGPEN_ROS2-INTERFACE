@@ -8,7 +8,7 @@ Panels:
         - /Status1
         - /Ground Grid1
       Splitter Ratio: 0.5
-    Tree Height: 427
+    Tree Height: 588
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
@@ -116,10 +116,10 @@ Visualization Manager:
         Value: /cmd_position_marker
       Value: false
     - Class: rviz_default_plugins/Marker
-      Enabled: false
-      Name: MOB Raw
+      Enabled: true
+      Name: f raw
       Namespaces:
-        {}
+        mob_raw: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -127,12 +127,12 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /mob_force_raw_marker
-      Value: false
+      Value: true
     - Class: rviz_default_plugins/Marker
-      Enabled: false
-      Name: MOB Bar
+      Enabled: true
+      Name: fbar
       Namespaces:
-        {}
+        mob_bar: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -140,10 +140,10 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /mob_force_bar_marker
-      Value: false
+      Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
-      Name: MOB Hat C
+      Name: fhat c
       Namespaces:
         mob_hat_c: true
       Topic:
@@ -155,10 +155,10 @@ Visualization Manager:
         Value: /contact_force_marker
       Value: true
     - Class: rviz_default_plugins/Marker
-      Enabled: false
+      Enabled: true
       Name: Estimated Normal
       Namespaces:
-        {}
+        normal_estimation: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -166,19 +166,19 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /normal_est_marker
-      Value: false
+      Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
-      Name: tilted_wall
+      Name: Fitted reference surface
       Namespaces:
-        {}
+        reference_surface: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /wall_marker
+        Value: /reference_surface_marker
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
@@ -214,35 +214,35 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.083202362060547
+      Distance: 5.090939998626709
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.00478459382429719
-        Y: 1.356916904449463
-        Z: 0.5107200145721436
+        X: 1.3252758979797363
+        Y: 0.39729616045951843
+        Z: 0.6621902585029602
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.484796404838562
+      Pitch: 0.35979753732681274
       Target Frame: world
       Value: Orbit (rviz_default_plugins)
-      Yaw: 3.150005578994751
+      Yaw: 4.022388935089111
     Saved: ~
 Window Geometry:
   Displays:
-    collapsed: true
+    collapsed: false
   Height: 1016
-  Hide Left Dock: true
+  Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000001cb0000039efc0200000002fb000000100044006900730070006c006100790073000000003d0000022e000000c900fffffffb0000000a0056006900650077007300000002710000016a000000a400ffffff0000039d0000039e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000100000000000001cb0000039efc0200000002fb000000100044006900730070006c006100790073010000003d000002cf000000c900fffffffb0000000a005600690065007700730100000312000000c9000000a400ffffff000005690000039e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
-    collapsed: true
-  Width: 925
-  X: 995
+    collapsed: false
+  Width: 1850
+  X: 70
   Y: 27

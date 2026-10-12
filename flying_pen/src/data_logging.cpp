@@ -79,6 +79,9 @@ public:
     bind("flying_pen_normal_estimator", 6, &DataLoggingNode::normal_estimator_);
     bind("flying_pen_normal_frame_a", 6, &DataLoggingNode::normal_frame_a_);
     bind("flying_pen_normal_frame_b", 2, &DataLoggingNode::normal_frame_b_);
+    bind("flying_pen_rviz_forces", 6, &DataLoggingNode::rviz_forces_);
+    bind("flying_pen_mob_recovery", 5, &DataLoggingNode::mob_recovery_);
+    bind("flying_pen_mob_input", 6, &DataLoggingNode::normal_mob_input_);
     cmd_position_sub_ = create_subscription<crazyflie_interfaces::msg::Position>(
       cf_ns_ + "/cmd_position", 10, std::bind(&DataLoggingNode::cmd_position, this, _1));
     position_control_sub_ = create_subscription<crazyflie_interfaces::msg::PositionControl>(
@@ -202,12 +205,15 @@ private:
     // The force-control debug blocks are optional and may be intentionally
     // disabled in crazyflies.yaml. Only the blocks required by the active
     // normal-estimator logger should fail the startup check.
-    constexpr std::array<const char *, 5> required_normal_topics = {
+    constexpr std::array<const char *, 8> required_normal_topics = {
       "flying_pen_normal_state",
       "flying_pen_normal_evidence",
       "flying_pen_normal_estimator",
       "flying_pen_normal_frame_a",
-      "flying_pen_normal_frame_b"};
+      "flying_pen_normal_frame_b",
+      "flying_pen_rviz_forces",
+      "flying_pen_mob_recovery",
+      "flying_pen_mob_input"};
     for (const char * topic : required_normal_topics) {
       const auto it = received_.find(topic);
       if (it == received_.end() || !it->second) {
@@ -265,7 +271,13 @@ private:
       "fp_normal_kappaHat,"
       "fp_normal_t1X,fp_normal_t1Y,fp_normal_t1Z,"
       "fp_normal_t2X,fp_normal_t2Y,fp_normal_t2Z,"
-      "u1_des,u2_des,forceDesired\n";
+      "u1_des,u2_des,forceDesired,"
+      "fp_normal_fRawX,fp_normal_fRawY,fp_normal_fRawZ,"
+      "fp_normal_fBarX,fp_normal_fBarY,fp_normal_fBarZ,"
+      "fp_normal_mobTorqueX,fp_normal_mobTorqueY,fp_normal_mobTorqueZ,"
+      "fp_normal_etaHat,fp_normal_batteryVoltage,"
+      "fp_normal_mobInputForceX,fp_normal_mobInputForceY,fp_normal_mobInputForceZ,"
+      "fp_normal_mobInputTorqueBodyX,fp_normal_mobInputTorqueBodyY,fp_normal_mobInputTorqueBodyZ\n";
     normal_csv_.flush();
   }
   void write_normal_row(double t, double dt_ms) {
@@ -275,7 +287,7 @@ private:
       return (it != received_.end() && it->second) ? sample : nan;
     };
     std::vector<double> row;
-    row.reserve(37);
+    row.reserve(54);
     row.push_back(t); row.push_back(dt_ms);
     for (double x : mocap_xyz_) row.push_back(mocap_received_ ? x : nan);
     for (double x : attitude_rpy_) row.push_back(cf_pose_received_ ? x : nan);
@@ -295,6 +307,9 @@ private:
     row.push_back(contact_velocity_command ? normal_u1_des_ : nan);
     row.push_back(contact_velocity_command ? normal_u2_des_ : nan);
     row.push_back(position_control_received_ ? normal_force_desired_ : nan);
+    for (double x : rviz_forces_) row.push_back(value("flying_pen_rviz_forces", x));
+    for (double x : mob_recovery_) row.push_back(value("flying_pen_mob_recovery", x));
+    for (double x : normal_mob_input_) row.push_back(value("flying_pen_mob_input", x));
 
     normal_csv_ << std::fixed << std::setprecision(9);
     for (size_t i = 0; i < row.size(); ++i) normal_csv_ << (i ? "," : "") << row[i];
@@ -327,6 +342,9 @@ private:
   std::array<double,6> normal_estimator_{0.0,0.0,0.0,0.0,0.0};
   std::array<double,6> normal_frame_a_{0.0,0.0,0.0,0.0,0.0};
   std::array<double,2> normal_frame_b_{0.0,0.0};
+  std::array<double,6> rviz_forces_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,5> mob_recovery_{0.0,0.0,0.0,0.0};
+  std::array<double,6> normal_mob_input_{0.0,0.0,0.0,0.0,0.0};
   std::array<double,3> attitude_rpy_{0.0,0.0,0.0};
   std::map<std::string,bool> received_; std::vector<rclcpp::Subscription<LogMsg>::SharedPtr> subscriptions_;
   rclcpp::Subscription<PosesMsg>::SharedPtr poses_sub_;

@@ -93,7 +93,8 @@ private:
     Auto,
     Basic32,
     Specific49,
-    Specific50
+    Specific50,
+    ForceControl54
   };
 
   static double wrapToPi(double angle)
@@ -120,6 +121,9 @@ private:
     }
     if (n == 50) {
       return LayoutType::Specific50;
+    }
+    if (n == 54) {
+      return LayoutType::ForceControl54;
     }
     if (n >= 49) {
       return LayoutType::Specific49;
@@ -243,9 +247,18 @@ private:
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Expected 49-length raw log, got %zu", msg->data.size());
       return;
     }
+    if (mode == LayoutType::ForceControl54 && msg->data.size() < 54) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Expected 54-length force-control log, got %zu", msg->data.size());
+      return;
+    }
 
     Eigen::Vector3d pos(msg->data[0], msg->data[1], msg->data[2]);
     Eigen::Vector3d rpy(msg->data[3], msg->data[4], msg->data[5]);
+    if (mode == LayoutType::ForceControl54) {
+      constexpr double deg_to_rad = M_PI / 180.0;
+      pos = Eigen::Vector3d(msg->data[2], msg->data[3], msg->data[4]);
+      rpy = deg_to_rad * Eigen::Vector3d(msg->data[51], msg->data[52], msg->data[53]);
+    }
     tf2::Quaternion q;
     q.setRPY(rpy.x(), rpy.y(), rpy.z());
 
@@ -254,9 +267,9 @@ private:
     Eigen::Vector3d body_rates = Eigen::Vector3d::Zero();
     Eigen::Vector3d cmd_vel = Eigen::Vector3d::Zero();
     Eigen::Vector4d cmd_xyzyaw = Eigen::Vector4d::Zero();
-    const double battery_status = msg->data[6];
-    const double battery_raw = msg->data[7];
-    const double battery_filtered = msg->data[8];
+    const double battery_status = mode == LayoutType::ForceControl54 ? msg->data[43] : msg->data[6];
+    const double battery_raw = mode == LayoutType::ForceControl54 ? msg->data[43] : msg->data[7];
+    const double battery_filtered = mode == LayoutType::ForceControl54 ? msg->data[43] : msg->data[8];
 
     if (mode == LayoutType::Basic32) {
       vel = Eigen::Vector3d(msg->data[11], msg->data[12], msg->data[13]);
@@ -267,6 +280,9 @@ private:
       acc = Eigen::Vector3d(msg->data[32], msg->data[33], msg->data[34]);
       cmd_xyzyaw = Eigen::Vector4d(msg->data[25], msg->data[26], msg->data[27], msg->data[28]);
       cmd_vel = Eigen::Vector3d(msg->data[37], msg->data[38], msg->data[39]);
+    } else if (mode == LayoutType::ForceControl54) {
+      cmd_xyzyaw = Eigen::Vector4d(
+        msg->data[8], msg->data[9], msg->data[10], rpy.z());
     } else {
       vel = Eigen::Vector3d(msg->data[13], msg->data[14], msg->data[15]);
       acc = Eigen::Vector3d(msg->data[16], msg->data[17], msg->data[18]);
@@ -356,6 +372,11 @@ private:
       pub_online_world_force_raw_->publish(makeWrench(stamp, world_force_raw));
       pub_online_world_force_scaled_->publish(makeWrench(stamp, world_force_scaled));
       pub_online_force_->publish(makeWrench(stamp, world_force_scaled));
+    } else if (mode == LayoutType::ForceControl54) {
+      const Eigen::Vector3d mob_force(msg->data[15], msg->data[16], msg->data[17]);
+      pub_online_world_force_raw_->publish(makeWrench(stamp, mob_force));
+      pub_online_world_force_scaled_->publish(makeWrench(stamp, mob_force));
+      pub_online_force_->publish(makeWrench(stamp, mob_force));
     }
 
     have_prev_ = true;

@@ -4,7 +4,9 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction, TimerAction
+from launch.conditions import UnlessCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -38,6 +40,17 @@ def launch_setup(context, *args, **kwargs):
         su_wrench_cfg.get("rOffY", 0.0),
         su_wrench_cfg.get("rOffZ", 0.04),
     ]
+    rviz_geometry_cfg = shared_su_cfg.get("robot_types", {}).get("cf21", {}).get("rviz_geometry", {})
+    rviz_geometry_params = {
+        "reference_surface.enabled": rviz_geometry_cfg.get("enabled", True),
+        "reference_surface.origin": rviz_geometry_cfg.get("origin", [1.4493, -0.0956, 0.7028]),
+        "reference_surface.initial_tangent_deg": rviz_geometry_cfg.get("initial_tangent_deg", 120.0),
+        "reference_surface.plane_length": rviz_geometry_cfg.get("plane_length", 0.25),
+        "reference_surface.curve_radius": rviz_geometry_cfg.get("curve_radius", 0.580),
+        "reference_surface.turn_angle_deg": rviz_geometry_cfg.get("turn_angle_deg", 30.0),
+        "reference_surface.y_half_width": rviz_geometry_cfg.get("y_half_width", 0.20),
+        "reference_surface.alpha": rviz_geometry_cfg.get("alpha", 0.22),
+    }
     runtime_mode = runtime_cfg.get("runtime", {}).get("ros__parameters", {}).get("mode", "default")
     logger_cfg = runtime_cfg.get("data_logging", {}).get("ros__parameters", {})
     logger_topic = logger_cfg.get("publish_topic", "/data_logging_msg")
@@ -56,6 +69,7 @@ def launch_setup(context, *args, **kwargs):
             name="data_logging",
             output="screen",
             parameters=[runtime_params],
+            condition=UnlessCondition(LaunchConfiguration("replay_mode")),
         )
     )
 
@@ -70,6 +84,7 @@ def launch_setup(context, *args, **kwargs):
                 logger_topic,
             ],
             output="screen",
+            condition=UnlessCondition(LaunchConfiguration("replay_mode")),
         )
     )
 
@@ -112,7 +127,11 @@ def launch_setup(context, *args, **kwargs):
                     executable="rviz_visual",
                     name="rviz_visual",
                     output="screen",
-                    parameters=[rviz_visual_params, {"end_effector_offset": shared_ee_offset}],
+                    parameters=[
+                        rviz_visual_params,
+                        {"end_effector_offset": shared_ee_offset},
+                        rviz_geometry_params,
+                    ],
                 )
             ],
         )
@@ -171,4 +190,11 @@ def launch_setup(context, *args, **kwargs):
 
 
 def generate_launch_description():
-    return LaunchDescription([OpaqueFunction(function=launch_setup)])
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            "replay_mode",
+            default_value="false",
+            description="Disable live CSV logging and rosbag recording during CSV replay.",
+        ),
+        OpaqueFunction(function=launch_setup),
+    ])

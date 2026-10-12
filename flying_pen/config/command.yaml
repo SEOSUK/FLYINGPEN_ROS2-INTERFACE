@@ -1,8 +1,18 @@
 command_publisher:
   ros__parameters:
-    position_tick: [0.06, 0.06, 0.06]
-    velocity_tick: [0.06, 0.06, 0.06]
+    position_tick: [0.08, 0.08, 0.08]
+    velocity_tick: [0.08, 0.08, 0.08]
     yaw_tick_deg: 2.0
     force_tick: 0.024
-    square_speed: 0.14
-    square_size: 1.0
+    # g-key automatic surface trajectory
+    auto_approach_speed: 0.12       # [m/s], sequential approach and X/Z return
+    auto_target_x: 1.60             # [m], EE contact target
+    auto_target_y: 0.0              # [m], EE command Y target
+    auto_target_z: 0.86             # [m], EE contact target
+    auto_position_tolerance: 0.015  # [m], target transition tolerance
+    auto_t2_speed: 0.09             # [m/s], contact-frame t2 command
+    auto_contact_settle_sec: 10.0   # [s], wait after automatic i + j
+    auto_motion_sec: 6.0            # [s], each upward/downward pass
+    auto_wait_sec: 6.0              # [s], wait between passes
+    auto_fourth_wait_sec: 10.0      # [s], fourth pause (after first downward pass)
+    auto_final_wait_sec: 8.0        # [s], wait after the final downward pass

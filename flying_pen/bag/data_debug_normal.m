@@ -122,17 +122,19 @@ for j=1:nA
 end
 
 %% Figure 0 - 3x2 overview
-overview_xlim = [122 170] ;          % [s], e.g. [80 140]; [] uses the full recording
-overview_epsilon_v = 0.0004;         % [(m/s)^2], epsilon_v used for overview q_g
-overview_highlight_time_1 = [94 96];  % [s], pale orange; [] disables interval 1
-overview_highlight_time_2 = [81 90];       % [s], pale blue; [] disables interval 2
+overview_xlim = [61 90] ;          % [s], e.g. [80 140]; [] uses the full recording
+overview_epsilon_v = 0.0016;         % [(m/s)^2], epsilon_v used for overview q_g
+overview_highlight_time_1 = [179 185];  % [s], pale orange; [] disables interval 1
+overview_highlight_time_2 = [194 200];       % [s], pale blue; [] disables interval 2
+overview_highlight_time_3 = [188 191];       % [s], pale green; [] disables interval 3
 overview_normal_arrow_scale = 0.125;  % [m], XY normal-arrow length
 overview_normal_arrow_width = 2.4;    % XY normal-arrow line width
 overview_normal_arrow_period = 2.0;   % [s], draw one XY normal arrow per interval
 validateattributes(overview_normal_arrow_period,{'numeric'}, ...
     {'scalar','finite','positive'},mfilename,'overview_normal_arrow_period');
-overviewHighlightTimes={overview_highlight_time_1,overview_highlight_time_2};
-for highlightNumber=1:2
+overviewHighlightTimes={overview_highlight_time_1,overview_highlight_time_2, ...
+    overview_highlight_time_3};
+for highlightNumber=1:numel(overviewHighlightTimes)
     if ~isempty(overviewHighlightTimes{highlightNumber})
         validateattributes(overviewHighlightTimes{highlightNumber},{'numeric'}, ...
             {'vector','numel',2,'finite','increasing'},mfilename, ...
@@ -155,11 +157,11 @@ axOverviewTime=gobjects(18,1);
 leftTop=tiledlayout(tl,3,1,'TileSpacing','compact','Padding','compact');
 leftTop.Layout.Tile=1;
 axOverviewTime(1)=nexttile(leftTop); plot(t,u1Des,'--','LineWidth',1.8); hold on; plot(t,vT1Actual,'LineWidth',2.1); grid on;
-ylabel('v_{t1}'); title('t_1 velocity'); legend('desired','actual','Location','best');
+ylabel('v_{t1}'); ylim([-0.2 0.2]); title('t_1 velocity'); legend('desired','actual','Location','best');
 axOverviewTime(2)=nexttile(leftTop); plot(t,u2Des,'--','LineWidth',1.8); hold on; plot(t,vT2Actual,'LineWidth',2.1); grid on;
-ylabel('v_{t2}'); title('t_2 velocity'); legend('desired','actual','Location','best');
+ylabel('v_{t2}'); ylim([-0.2 0.2]); title('t_2 velocity'); legend('desired','actual','Location','best');
 axOverviewTime(3)=nexttile(leftTop); plot(t,forceDesired,'--','LineWidth',1.8); hold on; plot(t,fnHat,'LineWidth',2.4); grid on;
-ylabel('f_n [N]'); title('Normal force'); legend('desired','f hat_c dot n','Location','best');
+ylabel('f_n [N]'); ylim([0 0.04]); title('Normal force'); legend('desired','f hat_c dot n','Location','best');
 
 leftBottom=tiledlayout(tl,3,1,'TileSpacing','compact','Padding','compact');
 leftBottom.Layout.Tile=6;
@@ -168,7 +170,7 @@ for component=1:3
     axOverviewTime(3+component)=nexttile(leftBottom);
     plot(t,fcBar(:,component),'--','LineWidth',1.8); hold on;
     plot(t,qGOverview(:,component),'LineWidth',1.95); grid on;
-    ylabel(axisNames{component});
+    ylabel(axisNames{component}); ylim([-1 1]);
     if component==1, legend('q_f','q_g','Location','best'); end
 end
 title(leftBottom,sprintf('q_f vs. q_g (epsilon_v = %.4g)',overview_epsilon_v));
@@ -178,7 +180,7 @@ middleTop.Layout.Tile=2;
 for component=1:3
     axOverviewTime(6+component)=nexttile(middleTop);
     plot(t,nHat(:,component),'LineWidth',1.95); grid on;
-    ylabel(['n_' axisNames{component}]);
+    ylabel(['n_' axisNames{component}]); ylim([-1 1]);
 end
 title(middleTop,'Normal estimate');
 
@@ -187,18 +189,18 @@ middleBottom.Layout.Tile=5;
 for component=1:3
     axOverviewTime(9+component)=nexttile(middleBottom);
     plot(t,nDot(:,component),'LineWidth',1.95); grid on;
-    ylabel(['dn_' axisNames{component} ' [1/s]']);
+    ylabel(['dn_' axisNames{component} ' [1/s]']); ylim([-0.4 0.4]);
 end
 title(middleBottom,'Normal-dot estimate');
 
 rightTop=tiledlayout(tl,3,1,'TileSpacing','compact','Padding','compact');
 rightTop.Layout.Tile=3;
 axOverviewTime(13)=nexttile(rightTop);
-plot(t,vcNorm,'LineWidth',2.1); grid on; ylabel('|v_c|');
+plot(t,vcNorm,'LineWidth',2.1); grid on; ylabel('|v_c|'); ylim([0 0.2]);
 axOverviewTime(14)=nexttile(rightTop);
-plot(t,nDotNorm,'LineWidth',2.1); grid on; ylabel('|n hat dot|');
+plot(t,nDotNorm,'LineWidth',2.1); grid on; ylabel('|n hat dot|'); ylim([0 0.4]);
 axOverviewTime(15)=nexttile(rightTop);
-plot(t,abs(kappaHat),'LineWidth',2.4); grid on; ylabel('|kappa hat|');
+plot(t,abs(kappaHat),'LineWidth',2.4); grid on; ylabel('|kappa hat|'); ylim([0 4]);
 title(rightTop,'Estimator magnitudes');
 
 rightBottom=tiledlayout(tl,3,1,'TileSpacing','compact','Padding','compact');
@@ -208,14 +210,19 @@ for component=1:3
     axOverviewTime(15+component)=nexttile(rightBottom);
     plot(t,attitude(:,component),'LineWidth',1.95); grid on;
     ylabel([attitudeNames{component} ' [deg]']);
+    if component<=2
+        ylim([-5 5]);
+    else
+        ylim([-10 110]);
+    end
 end
 title(rightBottom,'Attitude');
 
-if isempty(overview_highlight_time_1) && isempty(overview_highlight_time_2)
+if all(cellfun(@isempty,overviewHighlightTimes))
     overviewTitle='Normal Estimation Overview | highlight: off';
 else
-    intervalLabels=cell(1,2);
-    for highlightNumber=1:2
+    intervalLabels=cell(1,numel(overviewHighlightTimes));
+    for highlightNumber=1:numel(overviewHighlightTimes)
         interval=overviewHighlightTimes{highlightNumber};
         if isempty(interval)
             intervalLabels{highlightNumber}=sprintf('%d: off',highlightNumber);
@@ -224,14 +231,15 @@ else
                 highlightNumber,interval(1),interval(2));
         end
     end
-    overviewTitle=sprintf('Normal Estimation Overview | %s | %s', ...
-        intervalLabels{1},intervalLabels{2});
+    overviewTitle=sprintf('Normal Estimation Overview | %s', ...
+        strjoin(intervalLabels,' | '));
 end
 title(tl,overviewTitle); xlabel(tl,'t [s]');
 linkaxes(axOverviewTime,'x');
 applyTimeXLim(axOverviewTime,overview_xlim);
 addTimeHighlight(axOverviewTime,overview_highlight_time_1,[1.00 0.75 0.30]);
 addTimeHighlight(axOverviewTime,overview_highlight_time_2,[0.35 0.65 1.00]);
+addTimeHighlight(axOverviewTime,overview_highlight_time_3,[0.45 0.80 0.45]);
 
 % Separate window in the same Figure 0 section
 figure('Name','Normal tuning: EE XY trajectory and estimated normal');
@@ -247,8 +255,8 @@ idxXY=timeSpacedIndices(t,validXYMask,overview_normal_arrow_period);
 quiver(eePos(idxXY,1),eePos(idxXY,2), ...
     overview_normal_arrow_scale*nHat(idxXY,1),overview_normal_arrow_scale*nHat(idxXY,2), ...
     0,'Color',[0.35 0.35 0.35],'LineWidth',overview_normal_arrow_width);
-highlightColors={[0.95 0.45 0.10],[0.10 0.45 0.95]};
-for highlightNumber=1:2
+highlightColors={[0.95 0.45 0.10],[0.10 0.45 0.95],[0.20 0.65 0.25]};
+for highlightNumber=1:numel(overviewHighlightTimes)
     interval=overviewHighlightTimes{highlightNumber};
     if isempty(interval), continue; end
     highlightMask=xyWindowMask&t>=interval(1)&t<=interval(2)& ...

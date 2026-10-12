@@ -53,7 +53,7 @@ public:
       "cf2/pose", 10,
       std::bind(&CommandPublisher::poseCallback, this, std::placeholders::_1));
     fw_cmd_sub_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
-      "cf2/cf_ee_tracking", 10,
+      "cf2/flying_pen_normal_state", 10,
       std::bind(&CommandPublisher::fwCmdPositionCallback, this, std::placeholders::_1));
     mob_force_sub_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
       "cf2/cf_contact_force", 10,
@@ -63,8 +63,17 @@ public:
     velocity_tick_ = declareVector3Parameter("velocity_tick", {0.1, 0.1, 0.1});
     yaw_tick_deg_ = this->declare_parameter<double>("yaw_tick_deg", 2.0);
     force_delta_ = this->declare_parameter<double>("force_tick", 0.01);
-    square_speed_ = this->declare_parameter<double>("square_speed", 0.14);
-    square_size_ = this->declare_parameter<double>("square_size", 1.0);
+    auto_approach_speed_ = this->declare_parameter<double>("auto_approach_speed", 0.12);
+    auto_target_z_ = this->declare_parameter<double>("auto_target_z", 0.86);
+    auto_target_y_ = this->declare_parameter<double>("auto_target_y", 0.0);
+    auto_target_x_ = this->declare_parameter<double>("auto_target_x", 1.60);
+    auto_position_tolerance_ = this->declare_parameter<double>("auto_position_tolerance", 0.015);
+    auto_t2_speed_ = this->declare_parameter<double>("auto_t2_speed", 0.09);
+    auto_contact_settle_sec_ = this->declare_parameter<double>("auto_contact_settle_sec", 10.0);
+    auto_motion_sec_ = this->declare_parameter<double>("auto_motion_sec", 6.0);
+    auto_wait_sec_ = this->declare_parameter<double>("auto_wait_sec", 6.0);
+    auto_fourth_wait_sec_ = this->declare_parameter<double>("auto_fourth_wait_sec", 10.0);
+    auto_final_wait_sec_ = this->declare_parameter<double>("auto_final_wait_sec", 8.0);
     command_frame_ = this->declare_parameter<std::string>("command_frame", loadSharedCommandFrameDefault());
     end_effector_offset_ = declareVector3Parameter("end_effector_offset", loadSharedEndEffectorOffsetDefault());
 
@@ -250,7 +259,7 @@ private:
       handleKey(static_cast<char>(ch));
     }
 
-    updateSquareTrajectory();
+    updateAutoTrajectory();
     updateDisplayedBatteryVoltage();
     publishPositionCmd();
     drawStatusBlock();
@@ -259,6 +268,15 @@ private:
 
   void handleKey(char c)
   {
+    if (auto_trajectory_active_ && c != 'g') {
+      // An interrupt has exactly the combined safety effect of pressing x, then u:
+      // zero the active command and return to world-frame position mode.
+      resetActiveCommand();
+      setPositionMode(crazyflie_interfaces::msg::PositionControl::MODE_POSITION);
+      status_msg_ = std::string("AUTO interrupted by '") + c + "'; applied x + u";
+      pushInputHistory(std::string(1, c) + " : AUTO CANCELED -> x + u");
+      return;
+    }
     if (c == 'w')       { onPositiveX(); }
     else if (c == 's')  { onNegativeX(); }
     else if (c == 'a')  { onPositiveY(); }
@@ -271,7 +289,7 @@ private:
     else if (c == 'i')  { setPositionMode(crazyflie_interfaces::msg::PositionControl::MODE_VELOCITY); }
     else if (c == 'u')  { setPositionMode(crazyflie_interfaces::msg::PositionControl::MODE_POSITION); }
     else if (c == 'f')  { publishKeyboardTrigger('f'); }
-    else if (c == 'g')  { startSquareTrajectory(); }
+    else if (c == 'g')  { startAutoTrajectory(); }
     else if (c == 'j')  { force_des_ += force_delta_; publishPositionControl(); updateForceStatus(); pushInputHistory("j : force += tick"); }
     else if (c == 'k')  { force_des_ -= force_delta_; publishPositionControl(); updateForceStatus(); pushInputHistory("k : force -= tick"); }
     else if (c == 'l')  { force_des_ = 0.0; publishPositionControl(); updateForceStatus(); pushInputHistory("l : force reset"); }
@@ -308,7 +326,7 @@ private:
 
   void onPositiveX()
   {
-    cancelSquareTrajectory("manual velocity command");
+    cancelAutoTrajectory("manual velocity command");
     if (usesVelocityCommands()) {
       cmd_xyz_yaw_[0] += velocity_tick_[0];
       pushInputHistory("w : vx += tick");
@@ -320,7 +338,7 @@ private:
 
   void onNegativeX()
   {
-    cancelSquareTrajectory("manual velocity command");
+    cancelAutoTrajectory("manual velocity command");
     if (usesVelocityCommands()) {
       cmd_xyz_yaw_[0] -= velocity_tick_[0];
       pushInputHistory("s : vx -= tick");
@@ -332,7 +350,7 @@ private:
 
   void onPositiveY()
   {
-    cancelSquareTrajectory("manual velocity command");
+    cancelAutoTrajectory("manual velocity command");
     if (usesVelocityCommands()) {
       cmd_xyz_yaw_[1] += velocity_tick_[1];
       pushInputHistory("a : vy += tick");
@@ -344,7 +362,7 @@ private:
 
   void onNegativeY()
   {
-    cancelSquareTrajectory("manual velocity command");
+    cancelAutoTrajectory("manual velocity command");
     if (usesVelocityCommands()) {
       cmd_xyz_yaw_[1] -= velocity_tick_[1];
       pushInputHistory("d : vy -= tick");
@@ -356,7 +374,7 @@ private:
 
   void onPositiveZ()
   {
-    cancelSquareTrajectory("manual velocity command");
+    cancelAutoTrajectory("manual velocity command");
     if (usesVelocityCommands()) {
       cmd_xyz_yaw_[2] += velocity_tick_[2];
       pushInputHistory("e : vz += tick");
@@ -368,7 +386,7 @@ private:
 
   void onNegativeZ()
   {
-    cancelSquareTrajectory("manual velocity command");
+    cancelAutoTrajectory("manual velocity command");
     if (usesVelocityCommands()) {
       cmd_xyz_yaw_[2] -= velocity_tick_[2];
       pushInputHistory("q : vz -= tick");
@@ -380,7 +398,7 @@ private:
 
   void setPositionMode(uint8_t mode)
   {
-    cancelSquareTrajectory("mode changed");
+    cancelAutoTrajectory("mode changed");
     if (mode == current_mode_) {
       status_msg_ = isContactFrameVelocityMode() ?
         "already in CONTACT-FRAME velocity mode" :
@@ -431,7 +449,7 @@ private:
 
   void resetActiveCommand()
   {
-    cancelSquareTrajectory("x pressed");
+    cancelAutoTrajectory("x pressed");
     if (usesVelocityCommands()) {
       cmd_xyz_yaw_[0] = 0.0;
       cmd_xyz_yaw_[1] = 0.0;
@@ -457,81 +475,184 @@ private:
     }
   }
 
-  void startSquareTrajectory()
+  enum class AutoStage
   {
-    if (!std::isfinite(square_speed_) || square_speed_ <= 0.0 ||
-        !std::isfinite(square_size_) || square_size_ <= 0.0) {
-      status_msg_ = "invalid square_speed or square_size parameter";
-      pushInputHistory("g : square rejected (invalid params)");
+    ApproachZ,
+    ApproachY,
+    ApproachX,
+    ContactSettle,
+    Up1,
+    Wait1,
+    Up2,
+    Wait2,
+    Down1,
+    Wait3,
+    Down2,
+    Wait4,
+    ReturnX,
+    ReturnZ,
+  };
+
+  void setAutoStage(const AutoStage stage, const char * status)
+  {
+    auto_stage_ = stage;
+    auto_stage_start_time_ = std::chrono::steady_clock::now();
+    cmd_xyz_yaw_[0] = 0.0;
+    cmd_xyz_yaw_[1] = 0.0;
+    cmd_xyz_yaw_[2] = 0.0;
+    status_msg_ = status;
+  }
+
+  void startAutoTrajectory()
+  {
+    if (auto_trajectory_active_) {
+      status_msg_ = "automatic trajectory already active";
+      return;
+    }
+    if (!has_latest_fw_cmd_) {
+      status_msg_ = "AUTO rejected: waiting for firmware command log";
+      pushInputHistory("g : AUTO rejected (no firmware command)");
+      return;
+    }
+    const bool parameters_valid =
+      std::isfinite(auto_approach_speed_) && auto_approach_speed_ > 0.0 &&
+      std::isfinite(auto_position_tolerance_) && auto_position_tolerance_ > 0.0 &&
+      std::isfinite(auto_t2_speed_) && auto_t2_speed_ > 0.0 &&
+      std::isfinite(auto_contact_settle_sec_) && auto_contact_settle_sec_ >= 0.0 &&
+      std::isfinite(auto_motion_sec_) && auto_motion_sec_ > 0.0 &&
+      std::isfinite(auto_wait_sec_) && auto_wait_sec_ >= 0.0 &&
+      std::isfinite(auto_fourth_wait_sec_) && auto_fourth_wait_sec_ >= 0.0 &&
+      std::isfinite(auto_final_wait_sec_) && auto_final_wait_sec_ >= 0.0;
+    if (!parameters_valid) {
+      status_msg_ = "AUTO rejected: invalid command.yaml parameters";
+      pushInputHistory("g : AUTO rejected (invalid params)");
       return;
     }
 
-    // MODE_POSITION is the firmware's world-frame integrated-velocity mode.
+    // Firmware MODE_POSITION integrates these world-frame velocity-like commands.
     current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
     velocity_mode_command_ready_time_ = std::chrono::steady_clock::time_point{};
     publishPositionControl();
-
-    cmd_xyz_yaw_[0] = square_speed_;
-    cmd_xyz_yaw_[1] = 0.0;
-    cmd_xyz_yaw_[2] = 0.0;
-    cmd_xyz_yaw_[3] = 0.0;
-    square_start_time_ = std::chrono::steady_clock::now();
-    square_trajectory_active_ = true;
-    pushInputHistory("g : start 1 m XY square");
-    status_msg_ = "XY square: side 1/4, +X, yaw 0 -> +80 deg";
+    auto_trajectory_active_ = true;
+    setAutoStage(AutoStage::ApproachZ, "AUTO: approach command Z -> 0.86 m");
+    pushInputHistory("g : start automatic surface trajectory");
   }
 
-  void cancelSquareTrajectory(const char * reason)
+  void cancelAutoTrajectory(const char * reason)
   {
-    if (!square_trajectory_active_) {
+    if (!auto_trajectory_active_) {
       return;
     }
-    square_trajectory_active_ = false;
+    auto_trajectory_active_ = false;
     cmd_xyz_yaw_[0] = 0.0;
     cmd_xyz_yaw_[1] = 0.0;
     cmd_xyz_yaw_[2] = 0.0;
-    status_msg_ = std::string("XY square canceled: ") + reason;
+    status_msg_ = std::string("AUTO canceled: ") + reason;
   }
 
-  void updateSquareTrajectory()
+  bool commandAxisTowardTarget(const std::size_t axis, const double target)
   {
-    if (!square_trajectory_active_) {
-      return;
-    }
-
-    const double side_duration_sec = square_size_ / square_speed_;
-    const double elapsed_sec = std::chrono::duration<double>(
-      std::chrono::steady_clock::now() - square_start_time_).count();
-    const int side = static_cast<int>(elapsed_sec / side_duration_sec);
-
+    const auto command = latestFwCommandInActiveReferenceFrame();
+    const double error = target - command[axis];
     cmd_xyz_yaw_[0] = 0.0;
     cmd_xyz_yaw_[1] = 0.0;
     cmd_xyz_yaw_[2] = 0.0;
-    if (side >= 4) {
-      square_trajectory_active_ = false;
-      status_msg_ = "XY square complete; velocity command zeroed";
-      pushInputHistory("g : XY square complete");
+    if (std::abs(error) <= auto_position_tolerance_) {
+      return true;
+    }
+    cmd_xyz_yaw_[axis] = std::copysign(std::min(auto_approach_speed_, std::abs(error)), error);
+    return false;
+  }
+
+  void updateAutoTrajectory()
+  {
+    if (!auto_trajectory_active_) {
+      return;
+    }
+    if (!has_latest_fw_cmd_) {
+      cancelAutoTrajectory("firmware command log lost");
       return;
     }
 
-    static constexpr std::array<std::array<double, 2>, 4> directions{{
-      {{1.0, 0.0}}, {{0.0, 1.0}}, {{-1.0, 0.0}}, {{0.0, -1.0}}
-    }};
-    static constexpr std::array<double, 4> yaw_start_deg{{0.0, 80.0, -80.0, 0.0}};
-    static constexpr std::array<double, 4> yaw_end_deg{{80.0, -80.0, 0.0, 0.0}};
-    static constexpr std::array<const char *, 4> labels{{"+X", "+Y", "-X", "-Y"}};
-    cmd_xyz_yaw_[0] = square_speed_ * directions[side][0];
-    cmd_xyz_yaw_[1] = square_speed_ * directions[side][1];
-    const double side_elapsed_sec = elapsed_sec - side * side_duration_sec;
-    const double side_progress = std::clamp(side_elapsed_sec / side_duration_sec, 0.0, 1.0);
-    cmd_xyz_yaw_[3] = yaw_start_deg[side] +
-                      side_progress * (yaw_end_deg[side] - yaw_start_deg[side]);
-
-    char text[160];
-    snprintf(
-      text, sizeof(text), "XY square: side %d/4 %s, yaw %+.1f deg, %.2f/%.2f s",
-      side + 1, labels[side], cmd_xyz_yaw_[3], side_elapsed_sec, side_duration_sec);
-    status_msg_ = text;
+    const double elapsed = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - auto_stage_start_time_).count();
+    switch (auto_stage_) {
+      case AutoStage::ApproachZ:
+        if (commandAxisTowardTarget(2, auto_target_z_)) {
+          setAutoStage(AutoStage::ApproachY, "AUTO: approach command Y -> 0.00 m");
+        }
+        break;
+      case AutoStage::ApproachY:
+        if (commandAxisTowardTarget(1, auto_target_y_)) {
+          setAutoStage(AutoStage::ApproachX, "AUTO: approach command X -> 1.60 m");
+        }
+        break;
+      case AutoStage::ApproachX:
+        if (commandAxisTowardTarget(0, auto_target_x_)) {
+          current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_VELOCITY;
+          force_des_ += force_delta_;  // Same effect as one 'j' key press.
+          publishPositionControl();
+          setAutoStage(AutoStage::ContactSettle, "AUTO: i + j complete; wait 10 s");
+        }
+        break;
+      case AutoStage::ContactSettle:
+        if (elapsed >= auto_contact_settle_sec_) {
+          setAutoStage(AutoStage::Up1, "AUTO: +t2 pass 1/4");
+        }
+        break;
+      case AutoStage::Up1:
+        cmd_xyz_yaw_[2] = auto_t2_speed_;
+        if (elapsed >= auto_motion_sec_) setAutoStage(AutoStage::Wait1, "AUTO: wait 1/4");
+        break;
+      case AutoStage::Wait1:
+        if (elapsed >= auto_wait_sec_) setAutoStage(AutoStage::Up2, "AUTO: +t2 pass 2/4");
+        break;
+      case AutoStage::Up2:
+        cmd_xyz_yaw_[2] = auto_t2_speed_;
+        if (elapsed >= auto_motion_sec_) setAutoStage(AutoStage::Wait2, "AUTO: wait 2/4");
+        break;
+      case AutoStage::Wait2:
+        if (elapsed >= auto_wait_sec_) setAutoStage(AutoStage::Down1, "AUTO: -t2 pass 3/4");
+        break;
+      case AutoStage::Down1:
+        cmd_xyz_yaw_[2] = -auto_t2_speed_;
+        if (elapsed >= auto_motion_sec_) setAutoStage(AutoStage::Wait3, "AUTO: wait 3/4");
+        break;
+      case AutoStage::Wait3:
+        if (elapsed >= auto_fourth_wait_sec_) {
+          setAutoStage(AutoStage::Down2, "AUTO: -t2 pass 4/4");
+        }
+        break;
+      case AutoStage::Down2:
+        cmd_xyz_yaw_[2] = -auto_t2_speed_;
+        if (elapsed >= auto_motion_sec_) {
+          setAutoStage(AutoStage::Wait4, "AUTO: final wait 8 s");
+        }
+        break;
+      case AutoStage::Wait4:
+        if (elapsed >= auto_final_wait_sec_) {
+          // Same mode transition as 'u', without canceling the active sequence.
+          current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
+          velocity_mode_command_ready_time_ = std::chrono::steady_clock::time_point{};
+          publishPositionControl();
+          setAutoStage(AutoStage::ReturnX, "AUTO: u complete; return command X -> 0");
+        }
+        break;
+      case AutoStage::ReturnX:
+        if (commandAxisTowardTarget(0, 0.0)) {
+          setAutoStage(AutoStage::ReturnZ, "AUTO: return command Z -> 0");
+        }
+        break;
+      case AutoStage::ReturnZ:
+        if (commandAxisTowardTarget(2, 0.0)) {
+          auto_trajectory_active_ = false;
+          cmd_xyz_yaw_[0] = cmd_xyz_yaw_[1] = cmd_xyz_yaw_[2] = 0.0;
+          publishKeyboardTrigger('p');
+          status_msg_ = "AUTO complete; returned X/Z to zero and DISARMED";
+          pushInputHistory("g : AUTO complete -> u, X=0, Z=0, p");
+        }
+        break;
+    }
   }
 
   void publishPositionCmd()
@@ -596,22 +717,13 @@ private:
 
   std::array<double, 3> latestFwCommandInActiveReferenceFrame() const
   {
-    std::array<double, 3> command{{
+    // flying_pen_normal_state directly logs suPosRef.eeCmdX/Y/Z, so these
+    // values are already expressed at the end effector. Do not add rOff twice.
+    return {{
       latest_fw_cmd_xyz_[0],
       latest_fw_cmd_xyz_[1],
       latest_fw_cmd_xyz_[2]
     }};
-
-    if (!isEndEffectorReference()) {
-      return command;
-    }
-
-    const double yaw_deg = has_latest_pose_ ? latest_pose_xyz_yaw_[3] : cmd_xyz_yaw_[3];
-    const auto rotated_offset = rotateOffsetByYawDeg(yaw_deg);
-    command[0] += rotated_offset[0];
-    command[1] += rotated_offset[1];
-    command[2] += rotated_offset[2];
-    return command;
   }
 
   void publishPositionControl()
@@ -699,13 +811,15 @@ private:
 
   void fwCmdPositionCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
   {
-    if (!msg || msg->values.size() < 3) {
+    // flying_pen_normal_state layout:
+    // [eePosX, eePosY, eePosZ, eeCmdX, eeCmdY, eeCmdZ]
+    if (!msg || msg->values.size() < 6) {
       return;
     }
 
-    latest_fw_cmd_xyz_[0] = msg->values[0];
-    latest_fw_cmd_xyz_[1] = msg->values[1];
-    latest_fw_cmd_xyz_[2] = msg->values[2];
+    latest_fw_cmd_xyz_[0] = msg->values[3];
+    latest_fw_cmd_xyz_[1] = msg->values[4];
+    latest_fw_cmd_xyz_[2] = msg->values[5];
     has_latest_fw_cmd_ = true;
   }
 
@@ -756,7 +870,7 @@ private:
     drawSepLine(ROW_USAGE_HEADER, "usage");
     mvprintw(ROW_USAGE_1, 0, "velocity: w/s(x), a/d(y), e/q(z), z/c(yaw), x(zero vel), i(contact on)");
     mvprintw(ROW_USAGE_2, 0, "velocity: w/s/a/d/e/q(v), u(contact off)");
-    mvprintw(ROW_USAGE_3, 0, "g: 1 m XY square @ 0.14 m/s, x: cancel/zero, o/p arm/disarm, t quit");
+    mvprintw(ROW_USAGE_3, 0, "g: automatic surface trajectory, any other key: cancel, o/p: arm/disarm, t: quit");
 
     drawSepLine(ROW_STATUS_HEADER, "status");
     mvprintw(ROW_STATUS_MODE, 0, "mode: ");
@@ -877,8 +991,17 @@ private:
   double yaw_tick_deg_;
   double force_des_;
   double force_delta_;
-  double square_speed_;
-  double square_size_;
+  double auto_approach_speed_;
+  double auto_target_z_;
+  double auto_target_y_;
+  double auto_target_x_;
+  double auto_position_tolerance_;
+  double auto_t2_speed_;
+  double auto_contact_settle_sec_;
+  double auto_motion_sec_;
+  double auto_wait_sec_;
+  double auto_fourth_wait_sec_;
+  double auto_final_wait_sec_;
   double latest_battery_voltage_;
   double displayed_battery_voltage_;
   uint8_t current_mode_;
@@ -886,12 +1009,13 @@ private:
   bool has_latest_pose_;
   bool has_latest_fw_cmd_;
   bool command_initialized_{false};
-  bool square_trajectory_active_{false};
+  bool auto_trajectory_active_{false};
+  AutoStage auto_stage_{AutoStage::ApproachZ};
   std::string command_frame_;
   std::string status_msg_;
   std::chrono::steady_clock::time_point last_battery_display_update_;
   std::chrono::steady_clock::time_point velocity_mode_command_ready_time_{};
-  std::chrono::steady_clock::time_point square_start_time_{};
+  std::chrono::steady_clock::time_point auto_stage_start_time_{};
   std::deque<std::string> last_inputs_;
 };
 
