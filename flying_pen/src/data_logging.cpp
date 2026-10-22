@@ -47,7 +47,7 @@ std::string sanitize(const std::string & v) {
 class DataLoggingNode final : public rclcpp::Node {
 public:
   DataLoggingNode() : Node("data_logging"), start_(Clock::now()), last_row_(start_) {
-    csv_dir_ = expand_user(declare_parameter<std::string>("csv_dir", "~/hitl_ws/src/flying_pen/bag/logging"));
+    csv_dir_ = expand_user(declare_parameter<std::string>("csv_dir", "~/hitl_ws/src/flying_pen/bag/logging_2nd_exp"));
     cf_ns_ = declare_parameter<std::string>("cf_ns", "/cf2");
     loop_hz_ = declare_parameter<double>("loop_hz", 50.0);
     startup_check_delay_sec_ = declare_parameter<double>("startup_check_delay_sec", 15.0);

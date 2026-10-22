@@ -6,13 +6,13 @@ robot_types:
         mobLPF: 1.0  # [Hz], shared critically damped force/torque MOB and matched-filter frequency
         rOffX: 0.070
         rOffY: 0.0
-        rOffZ: 0.019
-        comOffX: -0.000420  # body-frame CoM offset x [m]
-        comOffY: -0.000126  # body-frame CoM offset y [m]
+        rOffZ: 0.015
+        comOffX: -0.000717  # body-frame CoM offset x [m]
+        comOffY: 0.000003  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
       imu_sensors:
-        accTrimRoll: -0.095701
-        accTrimPitch: -0.118683
+        accTrimRoll: -0.437069
+        accTrimPitch: 0.171582
 
       su_position:
         # 힘제어 쪽
@@ -21,27 +21,27 @@ robot_types:
         preloadGv: 0.11  # effective gain from normal velocity leakage to command
         preloadNu: 0.30  # [m/s], symmetric saturation bound for normal velocity command
         # 노멀 추정기 쪽
-        normBeta: 3.0  # (normal이 굼뜨면 베타 올려) [1/s] beta ≈ 2*pi*f_c, decay rate of the normal-axis memory matrix
-        normGamma: 2.5  # (너무 예민하면 감마낮춰)[1/s] normal-estimate tracking gain
+        normBeta: 3.5  # (normal이 굼뜨면 베타 올려) [1/s] beta ≈ 2*pi*f_c, decay rate of the normal-axis memory matrix
+        normGamma: 3.0  # (너무 예민하면 감마낮춰)[1/s] normal-estimate tracking gain
         normEpsV: 0.0004  # [m^2/s^2], velocity-projection regularization epsilon_v
         normEpsF: 0.005  # [N], minimum force evidence norm epsilon_f
         # velocity modulation 쪽
-        velModEn: 0  # 0: disabled, 1: manual tangential velocity modulation enabled
-        velModABar: 0.005  # [m/s^2], geometry-induced normal acceleration bound
-        velModVMin: 0.06  # [m/s], minimum contact speed for curvature update
+        velModEn: 1  # 0: disabled, 1: manual tangential velocity modulation enabled
+        velModABar: 0.009  # [m/s^2], geometry-induced normal acceleration bound
+        velModVMin: 0.01  # [m/s], minimum contact speed for curvature update
         contactVelLPF: 1.0  # (velocity modulation에도 쓰고 normal estimation에도 씀.) [Hz], shared contact-velocity LPF cutoff
-        velModNDotLPF: 0.0  # [Hz], normal-derivative LPF cutoff for curvature estimation
-        velModKLPF: 0.5  # [Hz], curvature-estimate LPF cutoff
+        velModNDotLPF: 1.0  # [Hz], normal-derivative LPF cutoff for curvature estimation
+        velModKLPF: 1.0  # [Hz], curvature-estimate LPF cutoff
 
     # RViz reference surface only; these values are not sent to the firmware.
     rviz_geometry:
       enabled: true
-      origin: [1.45205, -0.11779, 0.70745]  # [m], fitted from flyingpen_normal_20261007_061030.csv
-      initial_tangent_deg: 120.0          # [deg], X-axis-referenced angle in X-Z
-      plane_length: 0.25                  # [m], each planar section
-      curve_radius: 0.580                 # [m], known physical circular-arc radius
-      turn_angle_deg: 30.0                # [deg], each circular turn
-      y_half_width: 0.20                  # [m], surface spans origin_y +/- value
+      origin: [0.81006, 0.28601, 0.81040]   # [m], only z is used for extrusion height
+      small_center: [0.79803, 0.75027]      # [m], fitted from 20261014_080431
+      large_center: [0.82208, -0.17825]     # [m], fitted from 20261014_080431
+      small_radius: 0.30693                 # [m], nominally about 0.28 m
+      large_radius: 0.44498                 # [m], nominally about 0.42 m
+      height_half_span: 0.20              # [m], surface spans trajectory altitude +/- value
       alpha: 0.22                         # [-], surface transparency
 
 shared_defaults:

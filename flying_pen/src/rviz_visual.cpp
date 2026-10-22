@@ -13,6 +13,7 @@
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <array>
+#include <algorithm>
 #include <eigen3/Eigen/Core>
 #include <eigen3/Eigen/Geometry>
 #include <deque>
@@ -49,6 +50,35 @@ bool isFiniteVector(const Eigen::Vector3d & v)
 {
   return std::isfinite(v.x()) && std::isfinite(v.y()) && std::isfinite(v.z());
 }
+
+std::vector<Eigen::Vector3d> convexHullXY(std::vector<Eigen::Vector3d> points)
+{
+  std::sort(points.begin(), points.end(), [](const auto & a, const auto & b) {
+    return a.x() < b.x() || (a.x() == b.x() && a.y() < b.y());
+  });
+  const auto cross = [](const auto & o, const auto & a, const auto & b) {
+    return (a.x() - o.x()) * (b.y() - o.y()) - (a.y() - o.y()) * (b.x() - o.x());
+  };
+  std::vector<Eigen::Vector3d> hull;
+  hull.reserve(points.size() + 1);
+  for (const auto & point : points) {
+    while (hull.size() >= 2 && cross(hull[hull.size() - 2], hull.back(), point) <= 0.0) {
+      hull.pop_back();
+    }
+    hull.push_back(point);
+  }
+  const std::size_t lower_size = hull.size();
+  for (auto it = points.rbegin() + 1; it != points.rend(); ++it) {
+    while (hull.size() > lower_size && cross(hull[hull.size() - 2], hull.back(), *it) <= 0.0) {
+      hull.pop_back();
+    }
+    hull.push_back(*it);
+  }
+  if (!hull.empty()) {
+    hull.pop_back();
+  }
+  return hull;
+}
 }
 
 class RvizVisual : public rclcpp::Node
@@ -69,7 +99,7 @@ public:
     data_topic_ = this->declare_parameter<std::string>("topic", "/data_logging_msg");
     normal_topic_ = this->declare_parameter<std::string>(
       "normal_topic", "/cf2/flying_pen/fp_normal");
-    history_sample_period_ = this->declare_parameter<double>("history_sample_period", 0.2);
+    history_sample_period_ = this->declare_parameter<double>("history_sample_period", 2.0);
     history_publish_period_ = this->declare_parameter<double>("history_publish_period", 0.10);
     history_duration_ = this->declare_parameter<double>("history_duration", 30.0);
     history_frame_axis_scale_ = this->declare_parameter<double>("history_frame_axis_scale", 0.3);
@@ -85,16 +115,16 @@ public:
     reference_surface_enabled_ = this->declare_parameter<bool>("reference_surface.enabled", true);
     reference_surface_origin_ = this->declare_parameter<std::vector<double>>(
       "reference_surface.origin", std::vector<double>{1.4493, -0.0956, 0.7028});
-    reference_surface_initial_tangent_deg_ = this->declare_parameter<double>(
-      "reference_surface.initial_tangent_deg", 120.0);
-    reference_surface_plane_length_ = this->declare_parameter<double>(
-      "reference_surface.plane_length", 0.25);
-    reference_surface_curve_radius_ = this->declare_parameter<double>(
-      "reference_surface.curve_radius", 0.580);
-    reference_surface_turn_angle_deg_ = this->declare_parameter<double>(
-      "reference_surface.turn_angle_deg", 30.0);
-    reference_surface_y_half_width_ = this->declare_parameter<double>(
-      "reference_surface.y_half_width", 0.20);
+    reference_surface_small_center_ = this->declare_parameter<std::vector<double>>(
+      "reference_surface.small_center", std::vector<double>{0.6712, -0.4786});
+    reference_surface_large_center_ = this->declare_parameter<std::vector<double>>(
+      "reference_surface.large_center", std::vector<double>{0.6532, 0.4452});
+    reference_surface_small_radius_ = this->declare_parameter<double>(
+      "reference_surface.small_radius", 0.3082);
+    reference_surface_large_radius_ = this->declare_parameter<double>(
+      "reference_surface.large_radius", 0.4455);
+    reference_surface_height_half_span_ = this->declare_parameter<double>(
+      "reference_surface.height_half_span", 0.20);
     reference_surface_alpha_ = this->declare_parameter<double>("reference_surface.alpha", 0.22);
     ee_offset_ = declareOffsetParameter();
 
@@ -579,7 +609,6 @@ private:
     FrameAxes axes;
 
     Eigen::Vector3d x_axis = normal_est_;
-    x_axis.z() *= 1.3;
     const double x_norm = x_axis.norm();
     if (x_norm < 1e-6) {
       return axes;
@@ -693,6 +722,9 @@ private:
     }
     if (!out.markers.empty()) {
       contact_history_pub_->publish(out);
+      for (const auto & marker : out.markers) {
+        ee_history_pub_->publish(marker);
+      }
     }
   }
 
@@ -901,17 +933,27 @@ private:
     const std::optional<HistorySample> & new_sample)
   {
     if (!expired_ids.empty()) {
-      contact_history_pub_->publish(makeDeleteFrameMarkers(stamp, expired_ids));
+      const auto delete_markers = makeDeleteFrameMarkers(stamp, expired_ids);
+      contact_history_pub_->publish(delete_markers);
+      for (const auto & marker : delete_markers.markers) {
+        ee_history_pub_->publish(marker);
+      }
     }
     if (new_sample.has_value()) {
-      contact_history_pub_->publish(makeAddFrameMarkers(stamp, *new_sample));
+      const auto add_markers = makeAddFrameMarkers(stamp, *new_sample);
+      contact_history_pub_->publish(add_markers);
+      for (const auto & marker : add_markers.markers) {
+        ee_history_pub_->publish(marker);
+      }
     }
   }
 
   void publishTrajectoryHistory(const rclcpp::Time & stamp)
   {
-    ee_history_pub_->publish(makeDeleteMarker("ee_trajectory_history", 1000, stamp));
-    contact_history_pub_->publish(makeContactHistoryMarkerArray(stamp));
+    auto history = makeContactHistoryMarkerArray(stamp);
+    if (!history.markers.empty()) {
+      ee_history_pub_->publish(history.markers.front());
+    }
   }
 
   void maybePublishTrajectoryHistory(const rclcpp::Time & stamp)
@@ -1052,50 +1094,37 @@ private:
     }
     if (
       reference_surface_origin_.size() != 3 ||
-      !std::isfinite(reference_surface_plane_length_) || reference_surface_plane_length_ <= 0.0 ||
-      !std::isfinite(reference_surface_curve_radius_) || reference_surface_curve_radius_ <= 0.0 ||
-      !std::isfinite(reference_surface_y_half_width_) || reference_surface_y_half_width_ <= 0.0)
+      reference_surface_small_center_.size() != 2 ||
+      reference_surface_large_center_.size() != 2 ||
+      !std::isfinite(reference_surface_small_radius_) || reference_surface_small_radius_ <= 0.0 ||
+      !std::isfinite(reference_surface_large_radius_) || reference_surface_large_radius_ <= 0.0 ||
+      !std::isfinite(reference_surface_height_half_span_) ||
+      reference_surface_height_half_span_ <= 0.0)
     {
       return;
     }
 
-    std::vector<Eigen::Vector3d> centerline;
-    centerline.reserve(128);
-    Eigen::Vector3d position(
-      reference_surface_origin_[0], reference_surface_origin_[1], reference_surface_origin_[2]);
-    double theta = reference_surface_initial_tangent_deg_ * kDegToRad;
-    const double turn = -std::abs(reference_surface_turn_angle_deg_) * kDegToRad;
-    constexpr int samples_per_section = 24;
-
-    for (int section = 0; section < 5; ++section) {
-      const bool straight = (section % 2) == 0;
-      for (int sample = 0; sample < samples_per_section; ++sample) {
-        const double fraction = static_cast<double>(sample) / samples_per_section;
-        if (straight) {
-          const double distance = fraction * reference_surface_plane_length_;
-          centerline.emplace_back(
-            position.x() + distance * std::cos(theta), position.y(),
-            position.z() + distance * std::sin(theta));
-        } else {
-          const double local_turn = fraction * turn;
-          const double curvature = -1.0 / reference_surface_curve_radius_;
-          centerline.emplace_back(
-            position.x() + (std::sin(theta + local_turn) - std::sin(theta)) / curvature,
-            position.y(),
-            position.z() + (-std::cos(theta + local_turn) + std::cos(theta)) / curvature);
-        }
-      }
-      if (straight) {
-        position.x() += reference_surface_plane_length_ * std::cos(theta);
-        position.z() += reference_surface_plane_length_ * std::sin(theta);
-      } else {
-        const double curvature = -1.0 / reference_surface_curve_radius_;
-        position.x() += (std::sin(theta + turn) - std::sin(theta)) / curvature;
-        position.z() += (-std::cos(theta + turn) + std::cos(theta)) / curvature;
-        theta += turn;
-      }
+    std::vector<Eigen::Vector3d> circle_points;
+    constexpr int samples_per_circle = 96;
+    circle_points.reserve(2 * samples_per_circle);
+    for (int sample = 0; sample < samples_per_circle; ++sample) {
+      const double angle = 2.0 * M_PI * static_cast<double>(sample) / samples_per_circle;
+      const double cosine = std::cos(angle);
+      const double sine = std::sin(angle);
+      circle_points.emplace_back(
+        reference_surface_small_center_[0] + reference_surface_small_radius_ * cosine,
+        reference_surface_small_center_[1] + reference_surface_small_radius_ * sine,
+        reference_surface_origin_[2]);
+      circle_points.emplace_back(
+        reference_surface_large_center_[0] + reference_surface_large_radius_ * cosine,
+        reference_surface_large_center_[1] + reference_surface_large_radius_ * sine,
+        reference_surface_origin_[2]);
     }
-    centerline.push_back(position);
+    auto centerline = convexHullXY(std::move(circle_points));
+    if (centerline.size() < 3) {
+      return;
+    }
+    centerline.push_back(centerline.front());
 
     marker.type = visualization_msgs::msg::Marker::TRIANGLE_LIST;
     marker.action = visualization_msgs::msg::Marker::ADD;
@@ -1104,21 +1133,73 @@ private:
     marker.color.g = 0.65f;
     marker.color.b = 0.90f;
     marker.color.a = static_cast<float>(std::clamp(reference_surface_alpha_, 0.0, 1.0));
-    const auto make_point = [](const Eigen::Vector3d & center, const double y_offset) {
+    const auto make_point = [](
+      const Eigen::Vector3d & center, const Eigen::Vector3d & normal,
+      const double thickness_offset, const double z_offset)
+    {
       geometry_msgs::msg::Point point;
-      point.x = center.x();
-      point.y = center.y() + y_offset;
-      point.z = center.z();
+      point.x = center.x() + thickness_offset * normal.x();
+      point.y = center.y() + thickness_offset * normal.y();
+      point.z = center.z() + z_offset;
       return point;
     };
+    constexpr double surface_half_thickness = 0.005;  // 1 cm total thickness
     for (std::size_t i = 0; i + 1 < centerline.size(); ++i) {
-      const auto lower0 = make_point(centerline[i], -reference_surface_y_half_width_);
-      const auto upper0 = make_point(centerline[i], reference_surface_y_half_width_);
-      const auto lower1 = make_point(centerline[i + 1], -reference_surface_y_half_width_);
-      const auto upper1 = make_point(centerline[i + 1], reference_surface_y_half_width_);
-      marker.points.insert(marker.points.end(), {lower0, upper0, upper1, lower0, upper1, lower1});
+      const Eigen::Vector3d tangent = centerline[i + 1] - centerline[i];
+      Eigen::Vector3d normal(-tangent.y(), tangent.x(), 0.0);
+      if (normal.norm() < 1.0e-9) {
+        continue;
+      }
+      normal.normalize();
+      const double low = -reference_surface_height_half_span_;
+      const double high = reference_surface_height_half_span_;
+      const auto p0ml = make_point(centerline[i], normal, -surface_half_thickness, low);
+      const auto p0mh = make_point(centerline[i], normal, -surface_half_thickness, high);
+      const auto p0pl = make_point(centerline[i], normal, surface_half_thickness, low);
+      const auto p0ph = make_point(centerline[i], normal, surface_half_thickness, high);
+      const auto p1ml = make_point(centerline[i + 1], normal, -surface_half_thickness, low);
+      const auto p1mh = make_point(centerline[i + 1], normal, -surface_half_thickness, high);
+      const auto p1pl = make_point(centerline[i + 1], normal, surface_half_thickness, low);
+      const auto p1ph = make_point(centerline[i + 1], normal, surface_half_thickness, high);
+      marker.points.insert(marker.points.end(), {
+        p0ml, p0mh, p1mh, p0ml, p1mh, p1ml,
+        p0pl, p1ph, p0ph, p0pl, p1pl, p1ph,
+        p0mh, p0ph, p1ph, p0mh, p1ph, p1mh,
+        p0ml, p1pl, p0pl, p0ml, p1ml, p1pl});
     }
     reference_surface_pub_->publish(marker);
+
+    visualization_msgs::msg::Marker normals;
+    normals.header = marker.header;
+    normals.ns = "reference_surface";
+    normals.id = 1;
+    normals.type = visualization_msgs::msg::Marker::LINE_LIST;
+    normals.action = visualization_msgs::msg::Marker::ADD;
+    normals.pose.orientation.w = 1.0;
+    normals.scale.x = 0.008;
+    normals.color.r = 0.95f;
+    normals.color.g = 0.20f;
+    normals.color.b = 0.12f;
+    normals.color.a = 0.95f;
+    normals.lifetime = rclcpp::Duration(0, 0);
+    constexpr double normal_length = 0.12;
+    for (std::size_t i = 0; i + 1 < centerline.size(); i += 12) {
+      const Eigen::Vector3d tangent = centerline[i + 1] - centerline[i];
+      Eigen::Vector3d surface_normal(-tangent.y(), tangent.x(), 0.0);
+      if (surface_normal.norm() < 1.0e-9) {
+        continue;
+      }
+      surface_normal.normalize();
+      geometry_msgs::msg::Point start;
+      start.x = centerline[i].x();
+      start.y = centerline[i].y();
+      start.z = centerline[i].z();
+      geometry_msgs::msg::Point end = start;
+      end.x += normal_length * surface_normal.x();
+      end.y += normal_length * surface_normal.y();
+      normals.points.insert(normals.points.end(), {start, end});
+    }
+    reference_surface_pub_->publish(normals);
   }
 
   void publishWall(const rclcpp::Time& stamp)
@@ -1351,11 +1432,11 @@ private:
   double wall_publish_period_{1.0 / 30.0};
   bool reference_surface_enabled_{true};
   std::vector<double> reference_surface_origin_{1.4493, -0.0956, 0.7028};
-  double reference_surface_initial_tangent_deg_{120.0};
-  double reference_surface_plane_length_{0.25};
-  double reference_surface_curve_radius_{0.580};
-  double reference_surface_turn_angle_deg_{30.0};
-  double reference_surface_y_half_width_{0.20};
+  std::vector<double> reference_surface_small_center_;
+  std::vector<double> reference_surface_large_center_;
+  double reference_surface_small_radius_{0.28};
+  double reference_surface_large_radius_{0.42};
+  double reference_surface_height_half_span_{0.20};
   double reference_surface_alpha_{0.22};
   int next_history_sample_id_{0};
   size_t last_ee_history_sub_count_{0};

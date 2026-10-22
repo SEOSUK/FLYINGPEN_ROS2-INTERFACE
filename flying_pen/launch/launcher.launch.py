@@ -44,11 +44,11 @@ def launch_setup(context, *args, **kwargs):
     rviz_geometry_params = {
         "reference_surface.enabled": rviz_geometry_cfg.get("enabled", True),
         "reference_surface.origin": rviz_geometry_cfg.get("origin", [1.4493, -0.0956, 0.7028]),
-        "reference_surface.initial_tangent_deg": rviz_geometry_cfg.get("initial_tangent_deg", 120.0),
-        "reference_surface.plane_length": rviz_geometry_cfg.get("plane_length", 0.25),
-        "reference_surface.curve_radius": rviz_geometry_cfg.get("curve_radius", 0.580),
-        "reference_surface.turn_angle_deg": rviz_geometry_cfg.get("turn_angle_deg", 30.0),
-        "reference_surface.y_half_width": rviz_geometry_cfg.get("y_half_width", 0.20),
+        "reference_surface.small_center": rviz_geometry_cfg.get("small_center", [0.6712, -0.4786]),
+        "reference_surface.large_center": rviz_geometry_cfg.get("large_center", [0.6532, 0.4452]),
+        "reference_surface.small_radius": rviz_geometry_cfg.get("small_radius", 0.3082),
+        "reference_surface.large_radius": rviz_geometry_cfg.get("large_radius", 0.4455),
+        "reference_surface.height_half_span": rviz_geometry_cfg.get("height_half_span", 0.20),
         "reference_surface.alpha": rviz_geometry_cfg.get("alpha", 0.22),
     }
     runtime_mode = runtime_cfg.get("runtime", {}).get("ros__parameters", {}).get("mode", "default")

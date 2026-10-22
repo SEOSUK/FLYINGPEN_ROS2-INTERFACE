@@ -1,7 +1,7 @@
 command_publisher:
   ros__parameters:
-    position_tick: [0.08, 0.08, 0.08]
-    velocity_tick: [0.08, 0.08, 0.08]
+    position_tick: [0.06, 0.06, 0.06]
+    velocity_tick: [0.06, 0.06, 0.06]
     yaw_tick_deg: 2.0
     force_tick: 0.024
     # g-key automatic surface trajectory
