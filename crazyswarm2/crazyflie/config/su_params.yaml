@@ -4,15 +4,15 @@ robot_types:
       su_wrench:
         mass: 0.045000  # observer mass model [kg]
         mobLPF: 1.0  # [Hz], shared critically damped force/torque MOB and matched-filter frequency
-        rOffX: 0.070
+        rOffX: 0.075
         rOffY: 0.0
-        rOffZ: 0.015
-        comOffX: -0.000717  # body-frame CoM offset x [m]
-        comOffY: 0.000003  # body-frame CoM offset y [m]
+        rOffZ: 0.01
+        comOffX: -0.000440  # body-frame CoM offset x [m]
+        comOffY: -0.000234  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
       imu_sensors:
-        accTrimRoll: -0.437069
-        accTrimPitch: 0.171582
+        accTrimRoll: -0.378620
+        accTrimPitch: 0.149601
 
       su_position:
         # 힘제어 쪽
@@ -36,12 +36,11 @@ robot_types:
     # RViz reference surface only; these values are not sent to the firmware.
     rviz_geometry:
       enabled: true
-      origin: [0.81006, 0.28601, 0.81040]   # [m], only z is used for extrusion height
-      small_center: [0.79803, 0.75027]      # [m], fitted from 20261014_080431
-      large_center: [0.82208, -0.17825]     # [m], fitted from 20261014_080431
-      small_radius: 0.30693                 # [m], nominally about 0.28 m
-      large_radius: 0.44498                 # [m], nominally about 0.42 m
-      height_half_span: 0.20              # [m], surface spans trajectory altitude +/- value
+      origin: [1.31838, -0.00053, 0.85842] # [m], lower endpoint fitted from 20261023_022711
+      plane_inclinations_deg: [-23.0, 0.0, 21.0] # lower/middle/upper from horizontal
+      plane_lengths: [0.052901, 0.232250, 0.195486] # [m], lower/middle/upper
+      curve_radius: 0.810816               # [m], common blend radius
+      height_half_span: 0.20               # [m], extrusion half-width along world Y
       alpha: 0.22                         # [-], surface transparency
 
 shared_defaults:

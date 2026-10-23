@@ -69,15 +69,14 @@ method_widths = [1.8 1.8 2.0 2.4];
 
 printOfflineMetricTable(records,global_xlim);
 
-%% Key displays: traversal summary, geometry view, and plane-2 comparison
-plotFirstExperimentKeyDisplays(records,dataset_labels,record_colors, ...
-    global_xlim,cfg,[40 60],680,115);
-
 %% 0. Overview panel
 plotOverviewPanel(records,dataset_labels,record_colors,method_names, ...
     method_styles,method_widths,axis_names,global_xlim,cfg, ...
     [80 60 1350 800]); % figure [left bottom width height] [px]
 
+%% Key displays: traversal summary, geometry view, and plane-2 comparison
+plotFirstExperimentKeyDisplays(records,dataset_labels,record_colors, ...
+    global_xlim,cfg,[40 60],680,115);
 %% 0-1. Repeated-experiment normal-error statistics
 ensemble_error_xlim = [0 36]; % [s]; use [] for the full available time range
 comparison_method_indices = [3 4 2 1];

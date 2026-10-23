@@ -13,7 +13,7 @@ from launch_ros.actions import Node
 def launch_setup(context, *args, **kwargs):
     del context, args, kwargs
 
-    base_bag_dir = os.path.expanduser("~/hitl_ws/src/flying_pen/bag/folder")
+    base_bag_dir = os.path.expanduser("~/hitl_ws/src/flying_pen/bag/1023_1st_exp")
     os.makedirs(base_bag_dir, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -48,6 +48,9 @@ def launch_setup(context, *args, **kwargs):
         "reference_surface.large_center": rviz_geometry_cfg.get("large_center", [0.6532, 0.4452]),
         "reference_surface.small_radius": rviz_geometry_cfg.get("small_radius", 0.3082),
         "reference_surface.large_radius": rviz_geometry_cfg.get("large_radius", 0.4455),
+        "reference_surface.plane_lengths": rviz_geometry_cfg.get("plane_lengths", [0.052901, 0.232250, 0.195486]),
+        "reference_surface.curve_radius": rviz_geometry_cfg.get("curve_radius", 0.810816),
+        "reference_surface.plane_inclinations_deg": rviz_geometry_cfg.get("plane_inclinations_deg", [-23.0, 0.0, 21.0]),
         "reference_surface.height_half_span": rviz_geometry_cfg.get("height_half_span", 0.20),
         "reference_surface.alpha": rviz_geometry_cfg.get("alpha", 0.22),
     }

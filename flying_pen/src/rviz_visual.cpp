@@ -51,34 +51,6 @@ bool isFiniteVector(const Eigen::Vector3d & v)
   return std::isfinite(v.x()) && std::isfinite(v.y()) && std::isfinite(v.z());
 }
 
-std::vector<Eigen::Vector3d> convexHullXY(std::vector<Eigen::Vector3d> points)
-{
-  std::sort(points.begin(), points.end(), [](const auto & a, const auto & b) {
-    return a.x() < b.x() || (a.x() == b.x() && a.y() < b.y());
-  });
-  const auto cross = [](const auto & o, const auto & a, const auto & b) {
-    return (a.x() - o.x()) * (b.y() - o.y()) - (a.y() - o.y()) * (b.x() - o.x());
-  };
-  std::vector<Eigen::Vector3d> hull;
-  hull.reserve(points.size() + 1);
-  for (const auto & point : points) {
-    while (hull.size() >= 2 && cross(hull[hull.size() - 2], hull.back(), point) <= 0.0) {
-      hull.pop_back();
-    }
-    hull.push_back(point);
-  }
-  const std::size_t lower_size = hull.size();
-  for (auto it = points.rbegin() + 1; it != points.rend(); ++it) {
-    while (hull.size() > lower_size && cross(hull[hull.size() - 2], hull.back(), *it) <= 0.0) {
-      hull.pop_back();
-    }
-    hull.push_back(*it);
-  }
-  if (!hull.empty()) {
-    hull.pop_back();
-  }
-  return hull;
-}
 }
 
 class RvizVisual : public rclcpp::Node
@@ -123,6 +95,12 @@ public:
       "reference_surface.small_radius", 0.3082);
     reference_surface_large_radius_ = this->declare_parameter<double>(
       "reference_surface.large_radius", 0.4455);
+    reference_surface_plane_lengths_ = this->declare_parameter<std::vector<double>>(
+      "reference_surface.plane_lengths", std::vector<double>{0.052901, 0.232250, 0.195486});
+    reference_surface_curve_radius_ = this->declare_parameter<double>(
+      "reference_surface.curve_radius", 0.810816);
+    reference_surface_plane_inclinations_deg_ = this->declare_parameter<std::vector<double>>(
+      "reference_surface.plane_inclinations_deg", std::vector<double>{-23.0, 0.0, 21.0});
     reference_surface_height_half_span_ = this->declare_parameter<double>(
       "reference_surface.height_half_span", 0.20);
     reference_surface_alpha_ = this->declare_parameter<double>("reference_surface.alpha", 0.22);
@@ -1094,37 +1072,52 @@ private:
     }
     if (
       reference_surface_origin_.size() != 3 ||
-      reference_surface_small_center_.size() != 2 ||
-      reference_surface_large_center_.size() != 2 ||
-      !std::isfinite(reference_surface_small_radius_) || reference_surface_small_radius_ <= 0.0 ||
-      !std::isfinite(reference_surface_large_radius_) || reference_surface_large_radius_ <= 0.0 ||
+      reference_surface_plane_lengths_.size() != 3 ||
+      reference_surface_plane_inclinations_deg_.size() != 3 ||
+      !std::isfinite(reference_surface_curve_radius_) || reference_surface_curve_radius_ <= 0.0 ||
       !std::isfinite(reference_surface_height_half_span_) ||
       reference_surface_height_half_span_ <= 0.0)
     {
       return;
     }
 
-    std::vector<Eigen::Vector3d> circle_points;
-    constexpr int samples_per_circle = 96;
-    circle_points.reserve(2 * samples_per_circle);
-    for (int sample = 0; sample < samples_per_circle; ++sample) {
-      const double angle = 2.0 * M_PI * static_cast<double>(sample) / samples_per_circle;
-      const double cosine = std::cos(angle);
-      const double sine = std::sin(angle);
-      circle_points.emplace_back(
-        reference_surface_small_center_[0] + reference_surface_small_radius_ * cosine,
-        reference_surface_small_center_[1] + reference_surface_small_radius_ * sine,
-        reference_surface_origin_[2]);
-      circle_points.emplace_back(
-        reference_surface_large_center_[0] + reference_surface_large_radius_ * cosine,
-        reference_surface_large_center_[1] + reference_surface_large_radius_ * sine,
-        reference_surface_origin_[2]);
+    // Five-section X-Z profile: plane, circular blend, plane, circular blend, plane.
+    // The surface is extruded along world Y. Plane inclinations use the same
+    // convention as the MATLAB analysis (-23/0/21 deg from horizontal).
+    std::vector<Eigen::Vector3d> centerline;
+    centerline.reserve(155);
+    Eigen::Vector2d position(reference_surface_origin_[0], reference_surface_origin_[2]);
+    for (std::size_t segment = 0; segment < 3; ++segment) {
+      const double length = reference_surface_plane_lengths_[segment];
+      const double theta = (90.0 - reference_surface_plane_inclinations_deg_[segment]) * M_PI / 180.0;
+      constexpr int plane_samples = 31;
+      for (int sample = 0; sample < plane_samples; ++sample) {
+        const double local = length * static_cast<double>(sample) / (plane_samples - 1);
+        const Eigen::Vector2d point = position + local * Eigen::Vector2d(std::cos(theta), std::sin(theta));
+        if (centerline.empty() || sample > 0) {
+          centerline.emplace_back(point.x(), reference_surface_origin_[1], point.y());
+        }
+      }
+      position += length * Eigen::Vector2d(std::cos(theta), std::sin(theta));
+      if (segment < 2) {
+        const double next_theta =
+          (90.0 - reference_surface_plane_inclinations_deg_[segment + 1]) * M_PI / 180.0;
+        const double turn = next_theta - theta;
+        const double curvature = std::copysign(1.0 / reference_surface_curve_radius_, turn);
+        constexpr int arc_samples = 31;
+        for (int sample = 1; sample < arc_samples; ++sample) {
+          const double local_turn = turn * static_cast<double>(sample) / (arc_samples - 1);
+          const Eigen::Vector2d offset(
+            (std::sin(theta + local_turn) - std::sin(theta)) / curvature,
+            (-std::cos(theta + local_turn) + std::cos(theta)) / curvature);
+          const Eigen::Vector2d point = position + offset;
+          centerline.emplace_back(point.x(), reference_surface_origin_[1], point.y());
+        }
+        position += Eigen::Vector2d(
+          (std::sin(theta + turn) - std::sin(theta)) / curvature,
+          (-std::cos(theta + turn) + std::cos(theta)) / curvature);
+      }
     }
-    auto centerline = convexHullXY(std::move(circle_points));
-    if (centerline.size() < 3) {
-      return;
-    }
-    centerline.push_back(centerline.front());
 
     marker.type = visualization_msgs::msg::Marker::TRIANGLE_LIST;
     marker.action = visualization_msgs::msg::Marker::ADD;
@@ -1135,18 +1128,18 @@ private:
     marker.color.a = static_cast<float>(std::clamp(reference_surface_alpha_, 0.0, 1.0));
     const auto make_point = [](
       const Eigen::Vector3d & center, const Eigen::Vector3d & normal,
-      const double thickness_offset, const double z_offset)
+      const double thickness_offset, const double y_offset)
     {
       geometry_msgs::msg::Point point;
       point.x = center.x() + thickness_offset * normal.x();
-      point.y = center.y() + thickness_offset * normal.y();
-      point.z = center.z() + z_offset;
+      point.y = center.y() + y_offset;
+      point.z = center.z() + thickness_offset * normal.z();
       return point;
     };
     constexpr double surface_half_thickness = 0.005;  // 1 cm total thickness
     for (std::size_t i = 0; i + 1 < centerline.size(); ++i) {
       const Eigen::Vector3d tangent = centerline[i + 1] - centerline[i];
-      Eigen::Vector3d normal(-tangent.y(), tangent.x(), 0.0);
+      Eigen::Vector3d normal(-tangent.z(), 0.0, tangent.x());
       if (normal.norm() < 1.0e-9) {
         continue;
       }
@@ -1185,7 +1178,7 @@ private:
     constexpr double normal_length = 0.12;
     for (std::size_t i = 0; i + 1 < centerline.size(); i += 12) {
       const Eigen::Vector3d tangent = centerline[i + 1] - centerline[i];
-      Eigen::Vector3d surface_normal(-tangent.y(), tangent.x(), 0.0);
+      Eigen::Vector3d surface_normal(-tangent.z(), 0.0, tangent.x());
       if (surface_normal.norm() < 1.0e-9) {
         continue;
       }
@@ -1196,7 +1189,7 @@ private:
       start.z = centerline[i].z();
       geometry_msgs::msg::Point end = start;
       end.x += normal_length * surface_normal.x();
-      end.y += normal_length * surface_normal.y();
+      end.z += normal_length * surface_normal.z();
       normals.points.insert(normals.points.end(), {start, end});
     }
     reference_surface_pub_->publish(normals);
@@ -1436,6 +1429,9 @@ private:
   std::vector<double> reference_surface_large_center_;
   double reference_surface_small_radius_{0.28};
   double reference_surface_large_radius_{0.42};
+  std::vector<double> reference_surface_plane_lengths_;
+  double reference_surface_curve_radius_{0.810816};
+  std::vector<double> reference_surface_plane_inclinations_deg_;
   double reference_surface_height_half_span_{0.20};
   double reference_surface_alpha_{0.22};
   int next_history_sample_id_{0};

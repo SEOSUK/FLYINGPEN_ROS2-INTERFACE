@@ -71,6 +71,8 @@ public:
     auto_t2_speed_ = this->declare_parameter<double>("auto_t2_speed", 0.09);
     auto_contact_settle_sec_ = this->declare_parameter<double>("auto_contact_settle_sec", 10.0);
     auto_motion_sec_ = this->declare_parameter<double>("auto_motion_sec", 6.0);
+    auto_second_down_extra_sec_ =
+      this->declare_parameter<double>("auto_second_down_extra_sec", 1.5);
     auto_wait_sec_ = this->declare_parameter<double>("auto_wait_sec", 6.0);
     auto_fourth_wait_sec_ = this->declare_parameter<double>("auto_fourth_wait_sec", 10.0);
     auto_final_wait_sec_ = this->declare_parameter<double>("auto_final_wait_sec", 8.0);
@@ -520,6 +522,7 @@ private:
       std::isfinite(auto_t2_speed_) && auto_t2_speed_ > 0.0 &&
       std::isfinite(auto_contact_settle_sec_) && auto_contact_settle_sec_ >= 0.0 &&
       std::isfinite(auto_motion_sec_) && auto_motion_sec_ > 0.0 &&
+      std::isfinite(auto_second_down_extra_sec_) && auto_second_down_extra_sec_ >= 0.0 &&
       std::isfinite(auto_wait_sec_) && auto_wait_sec_ >= 0.0 &&
       std::isfinite(auto_fourth_wait_sec_) && auto_fourth_wait_sec_ >= 0.0 &&
       std::isfinite(auto_final_wait_sec_) && auto_final_wait_sec_ >= 0.0;
@@ -609,7 +612,7 @@ private:
         break;
       case AutoStage::Up2:
         cmd_xyz_yaw_[2] = auto_t2_speed_;
-        if (elapsed >= auto_motion_sec_) setAutoStage(AutoStage::Wait2, "AUTO: wait 2/4");
+        if (elapsed >= auto_motion_sec_) setAutoStage(AutoStage::Wait2, "AUTO: wait before -t2 pass");
         break;
       case AutoStage::Wait2:
         if (elapsed >= auto_wait_sec_) setAutoStage(AutoStage::Down1, "AUTO: -t2 pass 3/4");
@@ -625,8 +628,8 @@ private:
         break;
       case AutoStage::Down2:
         cmd_xyz_yaw_[2] = -auto_t2_speed_;
-        if (elapsed >= auto_motion_sec_) {
-          setAutoStage(AutoStage::Wait4, "AUTO: final wait 8 s");
+        if (elapsed >= auto_motion_sec_ + auto_second_down_extra_sec_) {
+          setAutoStage(AutoStage::Wait4, "AUTO: final contact wait");
         }
         break;
       case AutoStage::Wait4:
@@ -999,6 +1002,7 @@ private:
   double auto_t2_speed_;
   double auto_contact_settle_sec_;
   double auto_motion_sec_;
+  double auto_second_down_extra_sec_;
   double auto_wait_sec_;
   double auto_fourth_wait_sec_;
   double auto_final_wait_sec_;

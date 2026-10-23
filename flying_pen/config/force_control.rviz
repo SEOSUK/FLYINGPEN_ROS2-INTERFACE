@@ -185,6 +185,9 @@ Visualization Manager:
       Enabled: true
       Name: EE_history
       Namespaces:
+        contact_frame_history_x_segment: true
+        contact_frame_history_y_segment: true
+        contact_frame_history_z_segment: true
         ee_trajectory_history: true
       Topic:
         Depth: 5
@@ -214,21 +217,26 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Angle: -1.5699989795684814
-      Class: rviz_default_plugins/TopDownOrtho
+      Class: rviz_default_plugins/Orbit
+      Distance: 3.404820203781128
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
+      Focal Point:
+        X: 0.6428053379058838
+        Y: 0.1635347157716751
+        Z: 1.2145891189575195
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 378.14215087890625
+      Pitch: -0.09520243853330612
       Target Frame: world
-      Value: TopDownOrtho (rviz_default_plugins)
-      X: 0.6808931827545166
-      Y: -0.3067792057991028
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 4.677389144897461
     Saved: ~
 Window Geometry:
   Displays:
