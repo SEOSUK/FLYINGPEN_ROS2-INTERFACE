@@ -514,7 +514,13 @@ else
 end
 if ~isempty(contactStart)&&~isempty(motionEnd)&&motionEnd>contactStart
     fitEndTime=t(motionEnd)+postMotionSec;
-    loopIdx=find(valid&(1:numel(t)).'>=contactStart&t<=fitEndTime);
+    % Some logs stop publishing u2_des immediately after motion, while EE
+    % position continues through takeoff/fall-away. Do not let that tail
+    % shift the fitted wall pose. Logs that publish a finite zero command
+    % during the final contact hold still retain that useful dwell data.
+    commandValid=isfinite(u2Desired);
+    loopIdx=find(valid&commandValid& ...
+        (1:numel(t)).'>=contactStart&t<=fitEndTime);
 else
     warning('Contact/motion commands unavailable; falling back to closed-loop detection.');
     validIdx=find(valid); pointsAll=eePos(validIdx,[1 3]);

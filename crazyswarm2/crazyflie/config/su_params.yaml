@@ -4,15 +4,15 @@ robot_types:
       su_wrench:
         mass: 0.045000  # observer mass model [kg]
         mobLPF: 1.0  # [Hz], shared critically damped force/torque MOB and matched-filter frequency
-        rOffX: 0.075
+        rOffX: 0.11
         rOffY: 0.0
-        rOffZ: 0.01
-        comOffX: -0.000440  # body-frame CoM offset x [m]
-        comOffY: -0.000234  # body-frame CoM offset y [m]
+        rOffZ: 0.017
+        comOffX: -0.000412  # body-frame CoM offset x [m]
+        comOffY: -0.000447  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
       imu_sensors:
-        accTrimRoll: -0.378620
-        accTrimPitch: 0.149601
+        accTrimRoll: -0.215017
+        accTrimPitch: 0.705855
 
       su_position:
         # 힘제어 쪽
