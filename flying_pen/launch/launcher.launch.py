@@ -13,7 +13,7 @@ from launch_ros.actions import Node
 def launch_setup(context, *args, **kwargs):
     del context, args, kwargs
 
-    base_bag_dir = os.path.expanduser("~/hitl_ws/src/flying_pen/bag/1023_1st_exp")
+    base_bag_dir = os.path.expanduser("~/hitl_ws/src/flying_pen/bag/2nd_exp")
     os.makedirs(base_bag_dir, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")

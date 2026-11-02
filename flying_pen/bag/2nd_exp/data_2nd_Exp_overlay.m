@@ -19,12 +19,12 @@ normal_arrow_length=0.10;             % [m]
 crop_arrow_period_scale=0.48;         % denser relative spacing in the zoomed crop
 crop_positive_y_limit=1.3;            % crop upper EE-y limit [m]
 path_trajectory_positive_xlim=1.4;    % path-aligned trajectory positive x-axis limit [m]
-a_bar_n=0.005; small=1.0e-8;
+a_bar_n=0.009; small=1.0e-8;
 
 %% Portable multi-file loading
 dataDir=activeScriptDirectory();
 [selectedFiles,selectedPath]=uigetfile( ...
-    {'alpha*.csv','Normal-estimator CSV files (*.csv)';'*.csv','All CSV files'}, ...
+    {'*.csv','CSV files (*.csv)';'*.*','All files (*.*)'}, ...
     'Select second-experiment CSV files',dataDir,'MultiSelect','on');
 if isequal(selectedFiles,0), return; end
 if ischar(selectedFiles)||isstring(selectedFiles), selectedFiles=cellstr(selectedFiles); end
@@ -51,6 +51,12 @@ records=trimAlphaOffAfterContactLoss(records,alpha_off_contact_loss_path);
 colors=recordColors(records);
 labels=cellfun(@experimentLabel,{records.label},'UniformOutput',false);
 
+%% Overview (Figure 1)
+overview_xlim=[24 100];             % [s], shared x-limit for every overview panel
+plotQuadrantOverview(records,labels,colors,overview_xlim, ...
+    normal_arrow_path_period,normal_arrow_record_stagger,normal_arrow_length, ...
+    geometry_small_radius,geometry_large_radius);
+
 %% 0. Path-aligned overview panel
 plot_window_width=680;                % shared width for every plot window [px]
 subplot_row_height=115;               % shared height of one tiled subplot row [px]
@@ -75,6 +81,146 @@ plotOverviewPanel(records,labels,colors,time_xlim,time_window_origin, ...
     geometry_small_radius,geometry_large_radius,crop_positive_y_limit,[]);
 
 %% Local functions
+function plotQuadrantOverview(records,labels,colors,xLimits,arrowPeriod,arrowStagger,arrowLength, ...
+    smallRadius,largeRadius)
+% One publication-style dashboard. Time is shared by every response plot;
+% the trajectory panel uses only samples inside the same time interval.
+fig=figure(1); clf(fig);
+set(fig,'Name','Second experiment: overview','Color','w', ...
+    'Position',[30 40 1780 940]);
+panelPosition={[0.035 0.535 0.45 0.43],[0.515 0.535 0.45 0.43], ...
+    [0.035 0.055 0.45 0.43],[0.515 0.055 0.45 0.43]};
+panels=gobjects(4,1);
+for panelIndex=1:4
+    panels(panelIndex)=uipanel(fig,'Units','normalized', ...
+        'Position',panelPosition{panelIndex},'BackgroundColor','w', ...
+        'BorderType','line');
+end
+componentNames={'x','y','z'};
+plotOrder=recordPlotOrder(records);
+
+% Quadrant I: signed normal-rate components and rate magnitude.
+layout=tiledlayout(panels(1),4,1,'TileSpacing','compact','Padding','compact');
+rateAxes=gobjects(4,1);
+for row=1:4, rateAxes(row)=nexttile(layout); hold(rateAxes(row),'on'); end
+for plotIndex=1:numel(plotOrder)
+    k=plotOrder(plotIndex); r=records(k);
+    for component=1:3
+        plot(rateAxes(component),r.t,r.nDotFiltered(:,component), ...
+            'Color',colors(k,:),'LineWidth',1.5,'DisplayName',labels{k});
+    end
+    rateMagnitude=vecnorm(r.nDotFiltered,2,2);
+    plot(rateAxes(4),r.t,rateMagnitude,'Color',colors(k,:), ...
+        'LineWidth',1.6,'DisplayName',labels{k});
+end
+for component=1:3
+    ylabel(rateAxes(component),sprintf('$\\dot n_%s$ [1/s]',componentNames{component}), ...
+        'Interpreter','latex');
+    ylim(rateAxes(component),[-0.7 0.7]);
+end
+ylabel(rateAxes(4),'$||\\dot{\\mathbf n}||$ [1/s]','Interpreter','latex');
+ylim(rateAxes(4),[0 0.8]); title(rateAxes(1),'Normal rate');
+addCurvatureShading(rateAxes,records(1),'time',smallRadius,largeRadius);
+finishTimeOverviewAxes(rateAxes,xLimits); showRecordLegend(rateAxes(1),numel(records));
+
+% Quadrant II: true/measured direction angle about each Cartesian axis.
+layout=tiledlayout(panels(2),4,1,'TileSpacing','compact','Padding','compact');
+normalAxes=gobjects(4,1);
+for row=1:4, normalAxes(row)=nexttile(layout); hold(normalAxes(row),'on'); end
+for plotIndex=1:numel(plotOrder)
+    k=plotOrder(plotIndex); r=records(k);
+    for component=1:3
+        trueAngle=axisDirectionAngleDeg(r.trueNormal(:,component));
+        measuredAngle=axisDirectionAngleDeg(r.nHat(:,component));
+        plot(normalAxes(component),r.t,trueAngle,'--','Color',lightenColor(colors(k,:),0.58), ...
+            'LineWidth',2.0,'HandleVisibility','off');
+        plot(normalAxes(component),r.t,measuredAngle,'Color',colors(k,:), ...
+            'LineWidth',1.5,'DisplayName',labels{k});
+    end
+    errorDeg=normalAngleErrorDeg(r.trueNormal,r.nHat);
+    plot(normalAxes(4),r.t,errorDeg,'Color',colors(k,:), ...
+        'LineWidth',1.6,'DisplayName',labels{k});
+end
+for component=1:3
+    ylabel(normalAxes(component),sprintf('$\\theta_%s$ [deg]',componentNames{component}), ...
+        'Interpreter','latex');
+    ylim(normalAxes(component),[0 180]);
+end
+ylabel(normalAxes(4),'error [deg]'); ylim(normalAxes(4),[0 60]);
+title(normalAxes(1),'True vs. measured normal direction');
+addCurvatureShading(normalAxes,records(1),'time',smallRadius,largeRadius);
+finishTimeOverviewAxes(normalAxes,xLimits); showRecordLegend(normalAxes(1),numel(records));
+
+% Quadrant III: EE trajectory and estimated-normal arrows inside xLimits.
+trajectoryAxis=axes(panels(3)); hold(trajectoryAxis,'on');
+xyCenter=trajectoryCenter(records);
+for plotIndex=1:numel(plotOrder)
+    k=plotOrder(plotIndex); r=records(k);
+    valid=isfinite(r.t)&r.t>=xLimits(1)&r.t<=xLimits(2)& ...
+        all(isfinite(r.eePos(:,1:2)),2);
+    plot(trajectoryAxis,r.eePos(valid,2)-xyCenter(2),r.eePos(valid,1)-xyCenter(1), ...
+        'Color',colors(k,:),'LineWidth',1.7,'DisplayName',labels{k});
+    [highCurvature,lowCurvature]=curvatureMasks(r.trueCurvature,smallRadius,largeRadius);
+    [highColor,lowColor]=curvatureColors();
+    plotMaskedTrajectory(trajectoryAxis,r.eePos(:,2)-xyCenter(2), ...
+        r.eePos(:,1)-xyCenter(1),valid&highCurvature,highColor);
+    plotMaskedTrajectory(trajectoryAxis,r.eePos(:,2)-xyCenter(2), ...
+        r.eePos(:,1)-xyCenter(1),valid&lowCurvature,lowColor);
+    arrows=pathSpacedIndices(r.t,valid&all(isfinite(r.nHat(:,1:2)),2), ...
+        arrowPeriod,arrowStagger*(plotIndex-1));
+    quiver(trajectoryAxis,r.eePos(arrows,2)-xyCenter(2),r.eePos(arrows,1)-xyCenter(1), ...
+        arrowLength*r.nHat(arrows,2),arrowLength*r.nHat(arrows,1),0, ...
+        'Color',colors(k,:),'LineWidth',1.5,'MaxHeadSize',0.7,'HandleVisibility','off');
+end
+[highColor,lowColor]=curvatureColors();
+plot(trajectoryAxis,nan,nan,'Color',highColor,'LineWidth',4.0,'DisplayName','high curvature');
+plot(trajectoryAxis,nan,nan,'Color',lowColor,'LineWidth',4.0,'DisplayName','low curvature');
+axis(trajectoryAxis,'equal'); grid(trajectoryAxis,'on'); box(trajectoryAxis,'on');
+xlabel(trajectoryAxis,'EE y [m]'); ylabel(trajectoryAxis,'EE x [m]');
+title(trajectoryAxis,sprintf('EE trajectory and $\\hat{\\mathbf n}$ arrows, %.1f--%.1f s', ...
+    xLimits(1),xLimits(2)),'Interpreter','latex');
+showRecordLegend(trajectoryAxis,numel(records));
+
+% Quadrant IV: modulation, tangential velocity, and curvature.
+layout=tiledlayout(panels(4),3,1,'TileSpacing','compact','Padding','compact');
+metricAxes=gobjects(3,1);
+for row=1:3, metricAxes(row)=nexttile(layout); hold(metricAxes(row),'on'); end
+for plotIndex=1:numel(plotOrder)
+    k=plotOrder(plotIndex); r=records(k); c=colors(k,:);
+    plot(metricAxes(1),r.t,r.alphaStarFiltered,'Color',c,'LineWidth',1.6, ...
+        'DisplayName',labels{k});
+    plot(metricAxes(2),r.t,r.measuredT1VelocityFiltered,'Color',c,'LineWidth',1.7, ...
+        'DisplayName',[labels{k} ' measured']);
+    plot(metricAxes(2),r.t,r.initialT1Cmd,'--','Color',lightenColor(c,0.48), ...
+        'LineWidth',1.4,'DisplayName',[labels{k} ' original cmd']);
+    plot(metricAxes(2),r.t,r.finalT1Cmd,':','Color',c,'LineWidth',2.0, ...
+        'DisplayName',[labels{k} ' modulated cmd']);
+    plot(metricAxes(3),r.t,r.trueCurvature,'--','Color',lightenColor(c,0.58), ...
+        'LineWidth',2.0,'HandleVisibility','off');
+    plot(metricAxes(3),r.t,r.kappaHatFiltered,'Color',c,'LineWidth',1.6, ...
+        'DisplayName',labels{k});
+end
+ylabel(metricAxes(1),'$\\alpha^*$ [-]','Interpreter','latex'); ylim(metricAxes(1),[0 1.08]);
+ylabel(metricAxes(2),'$v_{t_1}$ [m/s]','Interpreter','latex'); ylim(metricAxes(2),[-0.02 0.20]);
+ylabel(metricAxes(3),'$\\kappa$ [1/m]','Interpreter','latex'); ylim(metricAxes(3),[-0.2 5]);
+title(metricAxes(1),'Velocity modulation');
+addCurvatureShading(metricAxes,records(1),'time',smallRadius,largeRadius);
+finishTimeOverviewAxes(metricAxes,xLimits);
+legend(metricAxes(2),'Location','best','Interpreter','latex','FontSize',7);
+showRecordLegend(metricAxes(1),numel(records)); showRecordLegend(metricAxes(3),numel(records));
+end
+
+function angleDeg=axisDirectionAngleDeg(component)
+angleDeg=nan(size(component)); valid=isfinite(component);
+angleDeg(valid)=acosd(max(-1,min(1,component(valid))));
+end
+
+function finishTimeOverviewAxes(ax,xLimits)
+for axisIndex=1:numel(ax), grid(ax(axisIndex),'on'); box(ax(axisIndex),'on'); end
+xlabel(ax(end),'Time [s]'); set(ax(1:end-1),'XTickLabel',[]);
+linkaxes(ax,'x'); set(ax,'XLim',xLimits);
+end
+
 function plotOverviewPanel(records,labels,colors,xLimits,windowOrigin,windowSize,windowGap, ...
     arrowPeriod,cropArrowScale,arrowStagger,arrowLength,alignmentMode,smallRadius,largeRadius, ...
     cropPositiveYLimit,trajectoryPositiveXLimit)
