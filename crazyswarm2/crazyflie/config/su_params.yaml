@@ -26,7 +26,7 @@ robot_types:
         normEpsV: 0.0004  # [m^2/s^2], velocity-projection regularization epsilon_v
         normEpsF: 0.005  # [N], minimum force evidence norm epsilon_f
         # velocity modulation 쪽
-        velModEn: 0  # 0: disabled, 1: manual tangential velocity modulation enabled
+        velModEn: 1  # 0: disabled, 1: manual tangential velocity modulation enabled
         velModABar: 0.009  # [m/s^2], geometry-induced normal acceleration bound
         velModVMin: 0.001  # [m/s], minimum contact speed for curvature update
         contactVelLPF: 1.5  # (velocity modulation에도 쓰고 normal estimation에도 씀.) [Hz], shared contact-velocity LPF cutoff

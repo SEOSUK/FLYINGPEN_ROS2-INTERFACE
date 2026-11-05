@@ -76,6 +76,16 @@ public:
     auto_wait_sec_ = this->declare_parameter<double>("auto_wait_sec", 6.0);
     auto_fourth_wait_sec_ = this->declare_parameter<double>("auto_fourth_wait_sec", 10.0);
     auto_final_wait_sec_ = this->declare_parameter<double>("auto_final_wait_sec", 8.0);
+    h_auto_approach_speed_ = this->declare_parameter<double>("h_auto_approach_speed", 0.12);
+    h_auto_target_x_ = this->declare_parameter<double>("h_auto_target_x", 1.60);
+    h_auto_target_y_ = this->declare_parameter<double>("h_auto_target_y", 0.02);
+    h_auto_target_z_ = this->declare_parameter<double>("h_auto_target_z", 0.87);
+    h_position_tolerance_ = this->declare_parameter<double>("h_position_tolerance", 0.01);
+    h_force_command_ = this->declare_parameter<double>("h_force_command", 0.024);
+    h_contact_settle_sec_ = this->declare_parameter<double>("h_contact_settle_sec", 3.0);
+    h_d_motion_sec_ = this->declare_parameter<double>("h_d_motion_sec", 2.0);
+    h_motion_speed_ = this->declare_parameter<double>("h_motion_speed", 0.06);
+    h_final_wait_sec_ = this->declare_parameter<double>("h_final_wait_sec", 2.0);
     command_frame_ = this->declare_parameter<std::string>("command_frame", loadSharedCommandFrameDefault());
     end_effector_offset_ = declareVector3Parameter("end_effector_offset", loadSharedEndEffectorOffsetDefault());
 
@@ -262,6 +272,7 @@ private:
     }
 
     updateAutoTrajectory();
+    updateHTrajectory();
     updateDisplayedBatteryVoltage();
     publishPositionCmd();
     drawStatusBlock();
@@ -270,7 +281,8 @@ private:
 
   void handleKey(char c)
   {
-    if (auto_trajectory_active_ && c != 'g') {
+    if ((auto_trajectory_active_ && c != 'g') ||
+        (h_trajectory_active_ && c != 'h')) {
       // An interrupt has exactly the combined safety effect of pressing x, then u:
       // zero the active command and return to world-frame position mode.
       resetActiveCommand();
@@ -292,6 +304,7 @@ private:
     else if (c == 'u')  { setPositionMode(crazyflie_interfaces::msg::PositionControl::MODE_POSITION); }
     else if (c == 'f')  { publishKeyboardTrigger('f'); }
     else if (c == 'g')  { startAutoTrajectory(); }
+    else if (c == 'h')  { startHTrajectory(); }
     else if (c == 'j')  { force_des_ += force_delta_; publishPositionControl(); updateForceStatus(); pushInputHistory("j : force += tick"); }
     else if (c == 'k')  { force_des_ -= force_delta_; publishPositionControl(); updateForceStatus(); pushInputHistory("k : force -= tick"); }
     else if (c == 'l')  { force_des_ = 0.0; publishPositionControl(); updateForceStatus(); pushInputHistory("l : force reset"); }
@@ -452,6 +465,7 @@ private:
   void resetActiveCommand()
   {
     cancelAutoTrajectory("x pressed");
+    cancelHTrajectory("x pressed");
     if (usesVelocityCommands()) {
       cmd_xyz_yaw_[0] = 0.0;
       cmd_xyz_yaw_[1] = 0.0;
@@ -653,6 +667,205 @@ private:
           publishKeyboardTrigger('p');
           status_msg_ = "AUTO complete; returned X/Z to zero and DISARMED";
           pushInputHistory("g : AUTO complete -> u, X=0, Z=0, p");
+        }
+        break;
+    }
+  }
+
+  enum class HStage
+  {
+    ApproachZ,
+    ApproachY,
+    ApproachX,
+    ContactSettle,
+    MoveD,
+    MoveA,
+    FinalWait,
+    ReturnX,
+    ReturnY,
+    ReturnZ,
+  };
+
+  void setHStage(const HStage stage, const char * status)
+  {
+    h_stage_ = stage;
+    h_stage_start_time_ = std::chrono::steady_clock::now();
+    cmd_xyz_yaw_[0] = 0.0;
+    cmd_xyz_yaw_[1] = 0.0;
+    cmd_xyz_yaw_[2] = 0.0;
+    status_msg_ = status;
+  }
+
+  void startHTrajectory()
+  {
+    if (h_trajectory_active_) {
+      status_msg_ = "H AUTO already active";
+      return;
+    }
+    if (auto_trajectory_active_) {
+      status_msg_ = "H AUTO rejected: g trajectory is active";
+      return;
+    }
+    if (!has_latest_fw_cmd_ || !has_latest_pose_) {
+      status_msg_ = "H AUTO rejected: waiting for command log and pose";
+      pushInputHistory("h : AUTO rejected (no command/pose)");
+      return;
+    }
+
+    const bool parameters_valid =
+      std::isfinite(h_auto_approach_speed_) && h_auto_approach_speed_ > 0.0 &&
+      std::isfinite(h_auto_target_x_) &&
+      std::isfinite(h_auto_target_y_) &&
+      std::isfinite(h_auto_target_z_) &&
+      std::isfinite(h_position_tolerance_) && h_position_tolerance_ > 0.0 &&
+      std::isfinite(h_force_command_) && h_force_command_ >= 0.0 &&
+      std::isfinite(h_contact_settle_sec_) && h_contact_settle_sec_ >= 0.0 &&
+      std::isfinite(h_d_motion_sec_) && h_d_motion_sec_ > 0.0 &&
+      std::isfinite(h_motion_speed_) && h_motion_speed_ > 0.0 &&
+      std::isfinite(h_final_wait_sec_) && h_final_wait_sec_ >= 0.0;
+    if (!parameters_valid) {
+      status_msg_ = "H AUTO rejected: invalid command.yaml parameters";
+      pushInputHistory("h : AUTO rejected (invalid params)");
+      return;
+    }
+
+    current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
+    velocity_mode_command_ready_time_ = std::chrono::steady_clock::time_point{};
+    publishPositionControl();
+    h_reference_crossings_ = 0;
+    h_inside_reference_tolerance_ = true;
+    h_trajectory_active_ = true;
+    setHStage(HStage::ApproachZ, "H AUTO: approach target Z");
+    pushInputHistory("h : start automatic return-crossing trajectory");
+  }
+
+  void cancelHTrajectory(const char * reason)
+  {
+    if (!h_trajectory_active_) {
+      return;
+    }
+    h_trajectory_active_ = false;
+    cmd_xyz_yaw_[0] = 0.0;
+    cmd_xyz_yaw_[1] = 0.0;
+    cmd_xyz_yaw_[2] = 0.0;
+    status_msg_ = std::string("H AUTO canceled: ") + reason;
+  }
+
+  bool hCommandAxisTowardTarget(const std::size_t axis, const double target)
+  {
+    const auto command = latestFwCommandInActiveReferenceFrame();
+    const double error = target - command[axis];
+    cmd_xyz_yaw_[0] = 0.0;
+    cmd_xyz_yaw_[1] = 0.0;
+    cmd_xyz_yaw_[2] = 0.0;
+    if (std::abs(error) <= h_position_tolerance_) {
+      return true;
+    }
+    cmd_xyz_yaw_[axis] =
+      std::copysign(std::min(h_auto_approach_speed_, std::abs(error)), error);
+    return false;
+  }
+
+  bool hPoseIsNearReference() const
+  {
+    const auto pose = latestPoseInActiveReferenceFrame();
+    return std::abs(pose[0] - h_reference_xy_[0]) <= h_position_tolerance_ &&
+           std::abs(pose[1] - h_reference_xy_[1]) <= h_position_tolerance_;
+  }
+
+  void updateHTrajectory()
+  {
+    if (!h_trajectory_active_) {
+      return;
+    }
+    if (!has_latest_fw_cmd_ || !has_latest_pose_) {
+      cancelHTrajectory("command log or pose lost");
+      return;
+    }
+
+    const double elapsed = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - h_stage_start_time_).count();
+    switch (h_stage_) {
+      case HStage::ApproachZ:
+        if (hCommandAxisTowardTarget(2, h_auto_target_z_)) {
+          setHStage(HStage::ApproachY, "H AUTO: approach target Y");
+        }
+        break;
+      case HStage::ApproachY:
+        if (hCommandAxisTowardTarget(1, h_auto_target_y_)) {
+          setHStage(HStage::ApproachX, "H AUTO: approach target X");
+        }
+        break;
+      case HStage::ApproachX:
+        if (hCommandAxisTowardTarget(0, h_auto_target_x_)) {
+          const auto pose = latestPoseInActiveReferenceFrame();
+          h_reference_xy_[0] = pose[0];
+          h_reference_xy_[1] = pose[1];
+          h_inside_reference_tolerance_ = true;
+          h_reference_crossings_ = 0;
+          current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_VELOCITY;
+          force_des_ = h_force_command_;
+          publishPositionControl();
+          setHStage(HStage::ContactSettle, "H AUTO: i + force complete; settling");
+        }
+        break;
+      case HStage::ContactSettle:
+        if (elapsed >= h_contact_settle_sec_) {
+          setHStage(HStage::MoveD, "H AUTO: d direction motion");
+        }
+        break;
+      case HStage::MoveD:
+        cmd_xyz_yaw_[1] = -h_motion_speed_;
+        if (elapsed >= h_d_motion_sec_) {
+          h_inside_reference_tolerance_ = hPoseIsNearReference();
+          setHStage(HStage::MoveA, "H AUTO: a direction; waiting for first crossing");
+        }
+        break;
+      case HStage::MoveA:
+      {
+        const bool inside = hPoseIsNearReference();
+        if (inside && !h_inside_reference_tolerance_) {
+          ++h_reference_crossings_;
+          if (h_reference_crossings_ >= 3) {
+            setHStage(HStage::FinalWait, "H AUTO: third crossing; final wait");
+            break;
+          }
+          if (h_reference_crossings_ == 2) {
+            status_msg_ = "H AUTO: second crossing; a speed doubled";
+            pushInputHistory("h : second XY crossing -> speed x2");
+          } else {
+            status_msg_ = "H AUTO: first crossing; base speed maintained";
+            pushInputHistory("h : first XY crossing -> base speed");
+          }
+        }
+        h_inside_reference_tolerance_ = inside;
+        cmd_xyz_yaw_[1] = h_motion_speed_ * (h_reference_crossings_ >= 2 ? 2.0 : 1.0);
+        break;
+      }
+      case HStage::FinalWait:
+        if (elapsed >= h_final_wait_sec_) {
+          current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
+          velocity_mode_command_ready_time_ = std::chrono::steady_clock::time_point{};
+          publishPositionControl();
+          setHStage(HStage::ReturnX, "H AUTO: u complete; return X to zero");
+        }
+        break;
+      case HStage::ReturnX:
+        if (hCommandAxisTowardTarget(0, 0.0)) {
+          setHStage(HStage::ReturnY, "H AUTO: return Y to zero");
+        }
+        break;
+      case HStage::ReturnY:
+        if (hCommandAxisTowardTarget(1, 0.0)) {
+          setHStage(HStage::ReturnZ, "H AUTO: return Z to zero");
+        }
+        break;
+      case HStage::ReturnZ:
+        if (hCommandAxisTowardTarget(2, 0.0)) {
+          h_trajectory_active_ = false;
+          cmd_xyz_yaw_[0] = cmd_xyz_yaw_[1] = cmd_xyz_yaw_[2] = 0.0;
+          status_msg_ = "H AUTO complete; returned XYZ to zero";
+          pushInputHistory("h : AUTO complete -> u, XYZ=0");
         }
         break;
     }
@@ -873,7 +1086,7 @@ private:
     drawSepLine(ROW_USAGE_HEADER, "usage");
     mvprintw(ROW_USAGE_1, 0, "velocity: w/s(x), a/d(y), e/q(z), z/c(yaw), x(zero vel), i(contact on)");
     mvprintw(ROW_USAGE_2, 0, "velocity: w/s/a/d/e/q(v), u(contact off)");
-    mvprintw(ROW_USAGE_3, 0, "g: automatic surface trajectory, any other key: cancel, o/p: arm/disarm, t: quit");
+    mvprintw(ROW_USAGE_3, 0, "g/h: automatic trajectories, any other key: cancel, o/p: arm/disarm, t: quit");
 
     drawSepLine(ROW_STATUS_HEADER, "status");
     mvprintw(ROW_STATUS_MODE, 0, "mode: ");
@@ -1006,6 +1219,16 @@ private:
   double auto_wait_sec_;
   double auto_fourth_wait_sec_;
   double auto_final_wait_sec_;
+  double h_auto_approach_speed_;
+  double h_auto_target_x_;
+  double h_auto_target_y_;
+  double h_auto_target_z_;
+  double h_position_tolerance_;
+  double h_force_command_;
+  double h_contact_settle_sec_;
+  double h_d_motion_sec_;
+  double h_motion_speed_;
+  double h_final_wait_sec_;
   double latest_battery_voltage_;
   double displayed_battery_voltage_;
   uint8_t current_mode_;
@@ -1015,11 +1238,17 @@ private:
   bool command_initialized_{false};
   bool auto_trajectory_active_{false};
   AutoStage auto_stage_{AutoStage::ApproachZ};
+  bool h_trajectory_active_{false};
+  HStage h_stage_{HStage::ApproachZ};
+  std::array<double, 2> h_reference_xy_{{0.0, 0.0}};
+  int h_reference_crossings_{0};
+  bool h_inside_reference_tolerance_{true};
   std::string command_frame_;
   std::string status_msg_;
   std::chrono::steady_clock::time_point last_battery_display_update_;
   std::chrono::steady_clock::time_point velocity_mode_command_ready_time_{};
   std::chrono::steady_clock::time_point auto_stage_start_time_{};
+  std::chrono::steady_clock::time_point h_stage_start_time_{};
   std::deque<std::string> last_inputs_;
 };
 

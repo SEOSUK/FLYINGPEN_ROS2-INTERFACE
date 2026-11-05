@@ -3,9 +3,9 @@
 clear; close all; clc;
 
 %% User settings
-path_xlim=[0 99];                    % normalized fitted-loop progress [%]
-time_xlim=[0 97.5];                     % [s], time-aligned overview
 geometry_fit_xlim=[0 100.6];
+geometry_reference_force_file='20261103_073951_force_control.csv';
+geometry_reference_time_xlim=[70 130]; % [s], dedicated true-normal surface swipe
 geometry_large_radius=0.420; geometry_small_radius=0.280;
 geometry_plane_length_guess=1.0;
 trajectory_contact_end_time=76.0;     % [s], alpha-OFF trajectory leaves the surface
@@ -16,13 +16,13 @@ alpha_off_contact_loss_path=90.399;    % [%], discard OFF data after this point 
 normal_arrow_path_period=1.6;         % shared overview/crop arrow spacing [% path]
 normal_arrow_record_stagger=0.3;     % ON/OFF arrow phase offset [fraction of spacing]
 normal_arrow_length=0.10;             % [m]
-crop_arrow_period_scale=0.48;         % denser relative spacing in the zoomed crop
-crop_positive_y_limit=1.3;            % crop upper EE-y limit [m]
-path_trajectory_positive_xlim=1.4;    % path-aligned trajectory positive x-axis limit [m]
 a_bar_n=0.009; small=1.0e-8;
 
 %% Portable multi-file loading
 dataDir=activeScriptDirectory();
+referenceGeometry=loadReferenceGeometry(dataDir,geometry_reference_force_file, ...
+    geometry_reference_time_xlim,geometry_small_radius,geometry_large_radius, ...
+    geometry_plane_length_guess);
 [selectedFiles,selectedPath]=uigetfile( ...
     {'*.csv','CSV files (*.csv)';'*.*','All files (*.*)'}, ...
     'Select second-experiment CSV files',dataDir,'MultiSelect','on');
@@ -35,8 +35,8 @@ for fileIndex=1:numel(selectedFiles)
     csvFile=fullfile(selectedPath,selectedFiles{fileIndex});
     fprintf('Loading %s\n',csvFile);
     T=readtable(csvFile,detectImportOptions(csvFile,'Delimiter',','));
-    r=prepareRecord(T,selectedFiles{fileIndex},geometry_fit_xlim, ...
-        geometry_small_radius,geometry_large_radius,geometry_plane_length_guess, ...
+    r=prepareRecord(T,selectedFiles{fileIndex},geometry_fit_xlim,referenceGeometry, ...
+        geometry_large_radius, ...
         trajectory_contact_end_time,alpha_off_first_low_curvature_delay,a_bar_n,small);
     if fileIndex==1, records=r; else, records(fileIndex)=r; end
     fprintf(['  %s | path length %.3f m | lap boundary %.1f%% | fit RMS %.2f mm | ' ...
@@ -52,33 +52,13 @@ colors=recordColors(records);
 labels=cellfun(@experimentLabel,{records.label},'UniformOutput',false);
 
 %% Overview (Figure 1)
-overview_xlim=[24 100];             % [s], shared x-limit for every overview panel
+overview_xlim=[70 130];             % [s], shared x-limit for every overview panel
 plotQuadrantOverview(records,labels,colors,overview_xlim, ...
     normal_arrow_path_period,normal_arrow_record_stagger,normal_arrow_length, ...
     geometry_small_radius,geometry_large_radius);
 
-%% 0. Path-aligned overview panel
-plot_window_width=680;                % shared width for every plot window [px]
-subplot_row_height=115;               % shared height of one tiled subplot row [px]
-path_window_origin=[40 60];              % window group lower-left [px]
-path_overview_window_size=[plot_window_width 3*subplot_row_height];
-path_overview_window_gap=[20 45];        % [horizontal vertical] gap [px]
-
-plotOverviewPanel(records,labels,colors,path_xlim,path_window_origin, ...
-    path_overview_window_size,path_overview_window_gap, ...
-    normal_arrow_path_period,crop_arrow_period_scale,normal_arrow_record_stagger,normal_arrow_length,'path', ...
-    geometry_small_radius,geometry_large_radius,crop_positive_y_limit, ...
-    path_trajectory_positive_xlim);
-
-%% 1. Time-aligned overview panel
-time_window_origin=[100 120];            % window group lower-left [px]
-time_overview_window_size=[plot_window_width 3*subplot_row_height];
-time_overview_window_gap=[20 45];        % [horizontal vertical] gap [px]
-
-plotOverviewPanel(records,labels,colors,time_xlim,time_window_origin, ...
-    time_overview_window_size,time_overview_window_gap, ...
-    1.0,crop_arrow_period_scale,normal_arrow_record_stagger,normal_arrow_length,'time', ...
-    geometry_small_radius,geometry_large_radius,crop_positive_y_limit,[]);
+%% EE desired vs. measured position (Figure 2)
+plotEePositionComparison(records,labels,colors,overview_xlim);
 
 %% Local functions
 function plotQuadrantOverview(records,labels,colors,xLimits,arrowPeriod,arrowStagger,arrowLength, ...
@@ -208,6 +188,36 @@ addCurvatureShading(metricAxes,records(1),'time',smallRadius,largeRadius);
 finishTimeOverviewAxes(metricAxes,xLimits);
 legend(metricAxes(2),'Location','best','Interpreter','latex','FontSize',7);
 showRecordLegend(metricAxes(1),numel(records)); showRecordLegend(metricAxes(3),numel(records));
+end
+
+function plotEePositionComparison(records,labels,colors,xLimits)
+fig=figure(2); clf(fig);
+set(fig,'Name','Second experiment: EE desired vs. measured','Color','w', ...
+    'Position',[100 80 920 760]);
+componentNames={'x','y','z'}; plotOrder=recordPlotOrder(records);
+positionAxes=gobjects(3,1);
+for component=1:3
+    positionAxes(component)=subplot(3,1,component,'Parent',fig);
+    hold(positionAxes(component),'on');
+    for plotIndex=1:numel(plotOrder)
+        k=plotOrder(plotIndex); c=colors(k,:);
+        plot(positionAxes(component),records(k).t,records(k).eePos(:,component), ...
+            'Color',c,'LineWidth',1.7, ...
+            'DisplayName',[labels{k} ' measured']);
+        plot(positionAxes(component),records(k).t,records(k).eeCmd(:,component), ...
+            '--','Color',c,'LineWidth',1.5, ...
+            'DisplayName',[labels{k} ' desired']);
+    end
+    grid(positionAxes(component),'on'); box(positionAxes(component),'on');
+    ylabel(positionAxes(component),sprintf('$p_{ee,%s}$ [m]',componentNames{component}), ...
+        'Interpreter','latex');
+    xlim(positionAxes(component),xLimits);
+end
+title(positionAxes(1),'End-effector position: desired vs. measured');
+legend(positionAxes(1),'Location','best','Interpreter','latex','FontSize',8);
+set(positionAxes(1:2),'XTickLabel',[]);
+xlabel(positionAxes(3),'Time [s]');
+linkaxes(positionAxes,'x');
 end
 
 function angleDeg=axisDirectionAngleDeg(component)
@@ -552,12 +562,13 @@ xlabel(ax(end),xText); set(ax(1:end-1),'XTickLabel',[]);
 linkaxes(ax,'x'); set(ax,'XLim',xLimits);
 end
 
-function r=prepareRecord(T,label,fitWindow,smallRadius,largeRadius,planeLength, ...
+function r=prepareRecord(T,label,fitWindow,referenceGeometry,largeRadius, ...
     contactEndTime,alphaOffLowDelay,aBarN,small)
 r.label=label; r.t=safeColumn(T,"t_sec");
 if all(~isfinite(r.t)), r.t=(0:height(T)-1).'; end
 first=find(isfinite(r.t),1); if ~isempty(first), r.t=r.t-r.t(first); end
-r.eePos=columnsXYZ(T,"fp_normal_eePos"); r.vc=columnsXYZ(T,"fp_normal_vc");
+r.eePos=columnsXYZ(T,"fp_normal_eePos");
+r.eeCmd=columnsXYZ(T,"fp_normal_eeCmd"); r.vc=columnsXYZ(T,"fp_normal_vc");
 r.t1=columnsXYZ(T,"fp_normal_t1");
 r.fcHat=columnsXYZ(T,"fp_normal_fcHat"); r.nHat=columnsXYZ(T,"fp_normal_nHat");
 r.nDot=columnsXYZ(T,"fp_normal_nDot"); r.kappaHat=safeColumn(T,"fp_normal_kappaHat");
@@ -571,7 +582,7 @@ r.nDotFiltered=zeroPhaseLowPass(r.nDot,r.t,1.0);
 r.kappaHatFiltered=zeroPhaseLowPass(r.kappaHat,r.t,1.0);
 r.alphaStarFiltered=zeroPhaseLowPass(r.alphaStar,r.t,1.0);
 r.initialT1Cmd=u1; r.finalT1Cmd=r.alphaStar.*u1;
-r.geometry=fitTwoCylinderSurface(r.t,r.eePos,fitWindow,smallRadius,largeRadius,planeLength);
+r.geometry=applyReferenceGeometry(r.t,r.eePos,fitWindow,referenceGeometry);
 r.trueNormal=r.geometry.trueNormal; r.trueCurvature=r.geometry.trueCurvature;
 afterContact=isAlphaOff(label)&r.t>contactEndTime;
 r.trueNormal(afterContact,:)=nan; r.trueCurvature(afterContact)=nan;
@@ -1036,6 +1047,74 @@ function xyz=columnsXYZ(T,prefix)
 xyz=[safeColumn(T,string(prefix)+"X"),safeColumn(T,string(prefix)+"Y"),safeColumn(T,string(prefix)+"Z")];
 end
 
+function fit=loadReferenceGeometry(dataDir,forceFile,timeWindow,smallRadius,largeRadius,planeLengthGuess)
+% The requested force-control CSV identifies the swipe run. Its legacy
+% fwEePos fields are zero in this recording, so use the synchronized
+% flyingpen_normal_<timestamp>.csv, which contains the actual firmware EE pose.
+forcePath=fullfile(dataDir,forceFile);
+if ~isfile(forcePath), error('True-normal reference CSV not found: %s',forcePath); end
+T=readtable(forcePath,detectImportOptions(forcePath,'Delimiter',','));
+t=safeColumn(T,"t_sec"); eePos=columnsXYZ(T,"fwEePos"); sourcePath=forcePath;
+if ~hasUsableSwipe(t,eePos,timeWindow)
+    [~,baseName]=fileparts(forcePath);
+    timestamp=regexp(baseName,'\d{8}_\d{6}','match','once');
+    if isempty(timestamp)
+        error('Cannot identify the paired normal-estimator CSV for %s.',forcePath);
+    end
+    sourcePath=fullfile(dataDir,['flyingpen_normal_' timestamp '.csv']);
+    if ~isfile(sourcePath)
+        error(['fwEePos is empty in %s and the paired EE log is missing: %s'], ...
+            forcePath,sourcePath);
+    end
+    T=readtable(sourcePath,detectImportOptions(sourcePath,'Delimiter',','));
+    t=safeColumn(T,"t_sec"); eePos=columnsXYZ(T,"fp_normal_eePos");
+end
+if ~hasUsableSwipe(t,eePos,timeWindow)
+    error('Not enough moving EE samples in %.1f--%.1f s of %s.', ...
+        timeWindow(1),timeWindow(2),sourcePath);
+end
+fit=fitTwoCylinderSurface(t,eePos,timeWindow,smallRadius,largeRadius,planeLengthGuess);
+fit.referenceSource=sourcePath; fit.referenceTimeWindow=timeWindow;
+fprintf('True-normal geometry: %s, %.1f--%.1f s | fit RMS %.2f mm\n', ...
+    sourcePath,timeWindow(1),timeWindow(2),1e3*fit.rms);
+end
+
+function usable=hasUsableSwipe(t,eePos,timeWindow)
+valid=isfinite(t)&all(isfinite(eePos),2)&t>=timeWindow(1)&t<=timeWindow(2);
+points=eePos(valid,1:2);
+usable=size(points,1)>=20;
+if usable
+    pathLength=sum(vecnorm(diff(points,1,1),2,2));
+    span=max(points,[],1)-min(points,[],1);
+    usable=pathLength>0.5&&max(span)>0.1;
+end
+end
+
+function fit=applyReferenceGeometry(t,eePos,timeWindow,model)
+% Keep each experiment's loop timing/path coordinate, but obtain its true
+% normal and curvature exclusively from the dedicated reference surface.
+sampleValid=isfinite(t)&all(isfinite(eePos),2); fitValid=sampleValid;
+if ~isempty(timeWindow), fitValid=fitValid&t>=timeWindow(1)&t<=timeWindow(2); end
+windowIdx=find(fitValid); if numel(windowIdx)<20, error('Not enough finite EE samples.'); end
+rawWindow=eePos(windowIdx,1:2); [loopStart,loopEnd]=longestClosedLoop(rawWindow,0.06,2.0);
+fitIdx=windowIdx(loopStart:loopEnd);
+idx=find(sampleValid); trueNormal=nan(size(eePos)); trueCurvature=nan(size(t));
+distances=nan(numel(idx),1);
+for k=1:numel(idx)
+    [distances(k),nearest]=min(vecnorm(model.centerline-eePos(idx(k),1:2),2,2));
+    if distances(k)<=0.06
+        trueNormal(idx(k),:)=[model.outward(nearest,:),0];
+        trueCurvature(idx(k))=model.centerlineCurvature(nearest);
+    end
+end
+fit.rms=sqrt(mean(distances(ismember(idx,fitIdx)).^2,'omitnan'));
+fit.loopTime=[t(fitIdx(1)) t(fitIdx(end))];
+fit.trueNormal=trueNormal; fit.trueCurvature=trueCurvature;
+fit.centerline=model.centerline; fit.centerlineCurvature=model.centerlineCurvature;
+fit.outward=model.outward; fit.referenceSource=model.referenceSource;
+fit.referenceTimeWindow=model.referenceTimeWindow;
+end
+
 function fit=fitTwoCylinderSurface(t,eePos,timeWindow,smallRadius,largeRadius,planeLengthGuess)
 sampleValid=isfinite(t)&all(isfinite(eePos),2); fitValid=sampleValid;
 if ~isempty(timeWindow), fitValid=fitValid&t>=timeWindow(1)&t<=timeWindow(2); end
@@ -1067,6 +1146,7 @@ end
 fit.rms=sqrt(mean(distances(ismember(idx,fitIdx)).^2,'omitnan'));
 fit.loopTime=[t(fitIdx(1)) t(fitIdx(end))]; fit.trueNormal=trueNormal;
 fit.trueCurvature=trueCurvature; fit.centerline=centerline;
+fit.centerlineCurvature=denseCurvature; fit.outward=outward;
 end
 
 function [bestStart,bestEnd]=longestClosedLoop(points,closureTolerance,minLoopLength)
