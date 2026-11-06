@@ -7,12 +7,12 @@ robot_types:
         rOffX: 0.11
         rOffY: 0.0
         rOffZ: 0.017
-        comOffX: -0.000468  # body-frame CoM offset x [m]
-        comOffY: 0.000010  # body-frame CoM offset y [m]
+        comOffX: -0.000504  # body-frame CoM offset x [m]
+        comOffY: -0.000034  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
       imu_sensors:
-        accTrimRoll: -0.137598
-        accTrimPitch: 0.795445
+        accTrimRoll: -0.379555
+        accTrimPitch: 0.403737
 
       su_position:
         # 힘제어 쪽
@@ -26,8 +26,8 @@ robot_types:
         normEpsV: 0.0004  # [m^2/s^2], velocity-projection regularization epsilon_v
         normEpsF: 0.005  # [N], minimum force evidence norm epsilon_f
         # velocity modulation 쪽
-        velModEn: 1  # 0: disabled, 1: manual tangential velocity modulation enabled
-        velModABar: 0.009  # [m/s^2], geometry-induced normal acceleration bound
+        velModEn: 0  # 0: disabled, 1: manual tangential velocity modulation enabled
+        velModABar: 0.0095  # [m/s^2], geometry-induced normal acceleration bound
         velModVMin: 0.001  # [m/s], minimum contact speed for curvature update
         contactVelLPF: 1.5  # (velocity modulation에도 쓰고 normal estimation에도 씀.) [Hz], shared contact-velocity LPF cutoff
         velModVelLPF: 1.0  # contactVelLPF 이후에 cascade로 적용되는 LPF cutoff, [Hz], contact-velocity LPF cutoff for velocity modulation. kappa hat에 쓰임.

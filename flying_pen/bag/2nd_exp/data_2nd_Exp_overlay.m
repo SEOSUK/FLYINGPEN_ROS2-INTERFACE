@@ -3,9 +3,11 @@
 clear; close all; clc;
 
 %% User settings
+path_xlim=[0 99];                    % normalized fitted-loop progress [%]
+time_xlim=[0 97.5];                     % [s], time-aligned overview
 geometry_fit_xlim=[0 100.6];
-geometry_reference_force_file='20261103_073951_force_control.csv';
-geometry_reference_time_xlim=[70 130]; % [s], dedicated true-normal surface swipe
+geometry_reference_force_file='20261106_040601_force_control.csv';
+geometry_reference_time_xlim=[40 133]; % [s], one complete reference swipe
 geometry_large_radius=0.420; geometry_small_radius=0.280;
 geometry_plane_length_guess=1.0;
 trajectory_contact_end_time=76.0;     % [s], alpha-OFF trajectory leaves the surface
@@ -16,6 +18,9 @@ alpha_off_contact_loss_path=90.399;    % [%], discard OFF data after this point 
 normal_arrow_path_period=1.6;         % shared overview/crop arrow spacing [% path]
 normal_arrow_record_stagger=0.3;     % ON/OFF arrow phase offset [fraction of spacing]
 normal_arrow_length=0.10;             % [m]
+crop_arrow_period_scale=0.48;         % denser relative spacing in the zoomed crop
+crop_positive_y_limit=1.3;            % crop upper EE-y limit [m]
+path_trajectory_positive_xlim=1.4;    % path-aligned trajectory positive x-axis limit [m]
 a_bar_n=0.009; small=1.0e-8;
 
 %% Portable multi-file loading
@@ -52,15 +57,67 @@ colors=recordColors(records);
 labels=cellfun(@experimentLabel,{records.label},'UniformOutput',false);
 
 %% Overview (Figure 1)
-overview_xlim=[70 130];             % [s], shared x-limit for every overview panel
+overview_xlim=[40 135];             % [s], shared x-limit for every overview panel
 plotQuadrantOverview(records,labels,colors,overview_xlim, ...
     normal_arrow_path_period,normal_arrow_record_stagger,normal_arrow_length, ...
     geometry_small_radius,geometry_large_radius);
 
-%% EE desired vs. measured position (Figure 2)
-plotEePositionComparison(records,labels,colors,overview_xlim);
+%% End-effector position tracking (Figure 2)
+plotEndEffectorTracking(records,labels,colors,overview_xlim);
+
+%% 0. Path-aligned overview panel
+plot_window_width=680;                % shared width for every plot window [px]
+subplot_row_height=115;               % shared height of one tiled subplot row [px]
+path_window_origin=[40 60];              % window group lower-left [px]
+path_overview_window_size=[plot_window_width 3*subplot_row_height];
+path_overview_window_gap=[20 45];        % [horizontal vertical] gap [px]
+
+plotOverviewPanel(records,labels,colors,path_xlim,path_window_origin, ...
+    path_overview_window_size,path_overview_window_gap, ...
+    normal_arrow_path_period,crop_arrow_period_scale,normal_arrow_record_stagger,normal_arrow_length,'path', ...
+    geometry_small_radius,geometry_large_radius,crop_positive_y_limit, ...
+    path_trajectory_positive_xlim);
+
+%% 1. Time-aligned overview panel
+time_window_origin=[100 120];            % window group lower-left [px]
+time_overview_window_size=[plot_window_width 3*subplot_row_height];
+time_overview_window_gap=[20 45];        % [horizontal vertical] gap [px]
+
+plotOverviewPanel(records,labels,colors,time_xlim,time_window_origin, ...
+    time_overview_window_size,time_overview_window_gap, ...
+    1.0,crop_arrow_period_scale,normal_arrow_record_stagger,normal_arrow_length,'time', ...
+    geometry_small_radius,geometry_large_radius,crop_positive_y_limit,[]);
 
 %% Local functions
+function plotEndEffectorTracking(records,labels,colors,xLimits)
+fig=figure(2); clf(fig);
+set(fig,'Name','Second experiment: EE command vs. measurement','Color','w', ...
+    'Position',[80 70 900 720]);
+componentNames={'x','y','z'};
+trackingAxes=gobjects(3,1);
+plotOrder=recordPlotOrder(records);
+for component=1:3
+    trackingAxes(component)=subplot(3,1,component,'Parent',fig);
+    hold(trackingAxes(component),'on');
+    for plotIndex=1:numel(plotOrder)
+        k=plotOrder(plotIndex); c=colors(k,:);
+        plot(trackingAxes(component),records(k).t,records(k).eeCmd(:,component), ...
+            '--','Color',lightenColor(c,0.45),'LineWidth',1.6, ...
+            'DisplayName',[labels{k} ' cmd']);
+        plot(trackingAxes(component),records(k).t,records(k).eePos(:,component), ...
+            '-','Color',c,'LineWidth',1.7, ...
+            'DisplayName',[labels{k} ' meas']);
+    end
+    grid(trackingAxes(component),'on'); box(trackingAxes(component),'on');
+    ylabel(trackingAxes(component),sprintf('EE %s [m]',componentNames{component}));
+end
+title(trackingAxes(1),'End-effector position command vs. measurement');
+xlabel(trackingAxes(3),'Time [s]');
+set(trackingAxes(1:2),'XTickLabel',[]);
+linkaxes(trackingAxes,'x'); set(trackingAxes,'XLim',xLimits);
+legend(trackingAxes(1),'Location','best','Interpreter','none','FontSize',8);
+end
+
 function plotQuadrantOverview(records,labels,colors,xLimits,arrowPeriod,arrowStagger,arrowLength, ...
     smallRadius,largeRadius)
 % One publication-style dashboard. Time is shared by every response plot;
@@ -188,36 +245,6 @@ addCurvatureShading(metricAxes,records(1),'time',smallRadius,largeRadius);
 finishTimeOverviewAxes(metricAxes,xLimits);
 legend(metricAxes(2),'Location','best','Interpreter','latex','FontSize',7);
 showRecordLegend(metricAxes(1),numel(records)); showRecordLegend(metricAxes(3),numel(records));
-end
-
-function plotEePositionComparison(records,labels,colors,xLimits)
-fig=figure(2); clf(fig);
-set(fig,'Name','Second experiment: EE desired vs. measured','Color','w', ...
-    'Position',[100 80 920 760]);
-componentNames={'x','y','z'}; plotOrder=recordPlotOrder(records);
-positionAxes=gobjects(3,1);
-for component=1:3
-    positionAxes(component)=subplot(3,1,component,'Parent',fig);
-    hold(positionAxes(component),'on');
-    for plotIndex=1:numel(plotOrder)
-        k=plotOrder(plotIndex); c=colors(k,:);
-        plot(positionAxes(component),records(k).t,records(k).eePos(:,component), ...
-            'Color',c,'LineWidth',1.7, ...
-            'DisplayName',[labels{k} ' measured']);
-        plot(positionAxes(component),records(k).t,records(k).eeCmd(:,component), ...
-            '--','Color',c,'LineWidth',1.5, ...
-            'DisplayName',[labels{k} ' desired']);
-    end
-    grid(positionAxes(component),'on'); box(positionAxes(component),'on');
-    ylabel(positionAxes(component),sprintf('$p_{ee,%s}$ [m]',componentNames{component}), ...
-        'Interpreter','latex');
-    xlim(positionAxes(component),xLimits);
-end
-title(positionAxes(1),'End-effector position: desired vs. measured');
-legend(positionAxes(1),'Location','best','Interpreter','latex','FontSize',8);
-set(positionAxes(1:2),'XTickLabel',[]);
-xlabel(positionAxes(3),'Time [s]');
-linkaxes(positionAxes,'x');
 end
 
 function angleDeg=axisDirectionAngleDeg(component)
@@ -567,8 +594,8 @@ function r=prepareRecord(T,label,fitWindow,referenceGeometry,largeRadius, ...
 r.label=label; r.t=safeColumn(T,"t_sec");
 if all(~isfinite(r.t)), r.t=(0:height(T)-1).'; end
 first=find(isfinite(r.t),1); if ~isempty(first), r.t=r.t-r.t(first); end
-r.eePos=columnsXYZ(T,"fp_normal_eePos");
-r.eeCmd=columnsXYZ(T,"fp_normal_eeCmd"); r.vc=columnsXYZ(T,"fp_normal_vc");
+r.eePos=columnsXYZ(T,"fp_normal_eePos"); r.eeCmd=columnsXYZ(T,"fp_normal_eeCmd");
+r.vc=columnsXYZ(T,"fp_normal_vc");
 r.t1=columnsXYZ(T,"fp_normal_t1");
 r.fcHat=columnsXYZ(T,"fp_normal_fcHat"); r.nHat=columnsXYZ(T,"fp_normal_nHat");
 r.nDot=columnsXYZ(T,"fp_normal_nDot"); r.kappaHat=safeColumn(T,"fp_normal_kappaHat");
@@ -1048,9 +1075,8 @@ xyz=[safeColumn(T,string(prefix)+"X"),safeColumn(T,string(prefix)+"Y"),safeColum
 end
 
 function fit=loadReferenceGeometry(dataDir,forceFile,timeWindow,smallRadius,largeRadius,planeLengthGuess)
-% The requested force-control CSV identifies the swipe run. Its legacy
-% fwEePos fields are zero in this recording, so use the synchronized
-% flyingpen_normal_<timestamp>.csv, which contains the actual firmware EE pose.
+% Use the force-control recording as the run identifier. Its fwEePos fields
+% can be empty, so fall back to the synchronized normal-estimator CSV.
 forcePath=fullfile(dataDir,forceFile);
 if ~isfile(forcePath), error('True-normal reference CSV not found: %s',forcePath); end
 T=readtable(forcePath,detectImportOptions(forcePath,'Delimiter',','));
@@ -1063,8 +1089,7 @@ if ~hasUsableSwipe(t,eePos,timeWindow)
     end
     sourcePath=fullfile(dataDir,['flyingpen_normal_' timestamp '.csv']);
     if ~isfile(sourcePath)
-        error(['fwEePos is empty in %s and the paired EE log is missing: %s'], ...
-            forcePath,sourcePath);
+        error('fwEePos is empty and the paired EE log is missing: %s',sourcePath);
     end
     T=readtable(sourcePath,detectImportOptions(sourcePath,'Delimiter',','));
     t=safeColumn(T,"t_sec"); eePos=columnsXYZ(T,"fp_normal_eePos");
@@ -1075,7 +1100,7 @@ if ~hasUsableSwipe(t,eePos,timeWindow)
 end
 fit=fitTwoCylinderSurface(t,eePos,timeWindow,smallRadius,largeRadius,planeLengthGuess);
 fit.referenceSource=sourcePath; fit.referenceTimeWindow=timeWindow;
-fprintf('True-normal geometry: %s, %.1f--%.1f s | fit RMS %.2f mm\n', ...
+fprintf('True-normal reference: %s, %.1f--%.1f s | fit RMS %.2f mm\n', ...
     sourcePath,timeWindow(1),timeWindow(2),1e3*fit.rms);
 end
 
@@ -1091,12 +1116,14 @@ end
 end
 
 function fit=applyReferenceGeometry(t,eePos,timeWindow,model)
-% Keep each experiment's loop timing/path coordinate, but obtain its true
-% normal and curvature exclusively from the dedicated reference surface.
+% Preserve each run's timing/path coordinate, while taking true surface
+% normals and curvature exclusively from the dedicated reference swipe.
 sampleValid=isfinite(t)&all(isfinite(eePos),2); fitValid=sampleValid;
 if ~isempty(timeWindow), fitValid=fitValid&t>=timeWindow(1)&t<=timeWindow(2); end
-windowIdx=find(fitValid); if numel(windowIdx)<20, error('Not enough finite EE samples.'); end
-rawWindow=eePos(windowIdx,1:2); [loopStart,loopEnd]=longestClosedLoop(rawWindow,0.06,2.0);
+windowIdx=find(fitValid);
+if numel(windowIdx)<20, error('Not enough finite EE samples.'); end
+rawWindow=eePos(windowIdx,1:2);
+[loopStart,loopEnd]=longestClosedLoop(rawWindow,0.06,2.0);
 fitIdx=windowIdx(loopStart:loopEnd);
 idx=find(sampleValid); trueNormal=nan(size(eePos)); trueCurvature=nan(size(t));
 distances=nan(numel(idx),1);

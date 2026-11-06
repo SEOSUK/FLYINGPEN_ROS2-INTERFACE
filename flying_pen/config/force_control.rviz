@@ -169,10 +169,10 @@ Visualization Manager:
         Value: /normal_est_marker
       Value: true
     - Class: rviz_default_plugins/Marker
-      Enabled: true
+      Enabled: false
       Name: Fitted reference surface
       Namespaces:
-        reference_surface: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -180,7 +180,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /reference_surface_marker
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/Marker
       Enabled: true
       Name: EE_history
@@ -217,21 +217,26 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Angle: -1.5599991083145142
-      Class: rviz_default_plugins/TopDownOrtho
+      Class: rviz_default_plugins/Orbit
+      Distance: 2.6866514682769775
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
+      Focal Point:
+        X: 0.8311798572540283
+        Y: 0.22173741459846497
+        Z: 0.2181280255317688
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 306.76336669921875
+      Pitch: 0.7997971177101135
       Target Frame: world
-      Value: TopDownOrtho (rviz_default_plugins)
-      X: 0.7603265643119812
-      Y: 0.2666429579257965
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 3.262359619140625
     Saved: ~
 Window Geometry:
   Displays:

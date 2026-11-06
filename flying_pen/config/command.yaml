@@ -20,12 +20,12 @@ command_publisher:
 
     # h-key automatic return-crossing trajectory
     h_auto_approach_speed: 0.12     # [m/s], target approach and XYZ return speed
-    h_auto_target_x: 0.33           # [m], configurable EE contact target X
-    h_auto_target_y: 0.21           # [m], configurable EE contact target Y
-    h_auto_target_z: 0.85           # [m], configurable EE contact target Z
-    h_position_tolerance: 0.02      # [m], target/captured-XY tolerance per axis
+    h_auto_target_x: 0.475           # [m], configurable EE contact target X
+    h_auto_target_y: 0.141           # [m], configurable EE contact target Y
+    h_auto_target_z: 0.80           # [m], configurable EE contact target Z
+    h_position_tolerance: 0.04      # [m], target/captured-XY tolerance per axis
     h_force_command: 0.024          # force command set together with automatic i
     h_contact_settle_sec: 3.0       # [s], wait after automatic i + force command
-    h_d_motion_sec: 4.0             # [s], initial d-direction motion
+    h_d_motion_sec: 6.0             # [s], initial d-direction motion
     h_motion_speed: 0.06            # [m/s], base d/a speed; doubles after second return
-    h_final_wait_sec: 3.0           # [s], wait after third return before u + home
+    h_final_wait_sec: 5.0           # [s], wait after third return before u + home
