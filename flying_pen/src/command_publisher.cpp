@@ -6,6 +6,7 @@
 #include <crazyflie_interfaces/msg/position_control.hpp>
 #include <crazyflie_interfaces/msg/status.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 
 #include <ncurses.h>
@@ -58,6 +59,9 @@ public:
     mob_force_sub_ = this->create_subscription<crazyflie_interfaces::msg::LogDataGeneric>(
       "cf2/cf_contact_force", 10,
       std::bind(&CommandPublisher::mobForceCallback, this, std::placeholders::_1));
+    fp_normal_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+      "cf2/flying_pen/fp_normal", 10,
+      std::bind(&CommandPublisher::fpNormalCallback, this, std::placeholders::_1));
 
     position_tick_ = declareVector3Parameter("position_tick", {0.1, 0.1, 0.2});
     velocity_tick_ = declareVector3Parameter("velocity_tick", {0.1, 0.1, 0.1});
@@ -86,6 +90,35 @@ public:
     h_d_motion_sec_ = this->declare_parameter<double>("h_d_motion_sec", 2.0);
     h_motion_speed_ = this->declare_parameter<double>("h_motion_speed", 0.06);
     h_final_wait_sec_ = this->declare_parameter<double>("h_final_wait_sec", 2.0);
+    box_start_x_ = this->declare_parameter<double>("box_start_x", 0.475);
+    box_start_y_ = this->declare_parameter<double>("box_start_y", 0.141);
+    box_start_z_ = this->declare_parameter<double>("box_start_z", 0.80);
+    box_home_x_ = this->declare_parameter<double>("box_home_x", 0.0);
+    box_home_y_ = this->declare_parameter<double>("box_home_y", 0.0);
+    box_home_z_ = this->declare_parameter<double>("box_home_z", 0.0);
+    box_t1_angle_deg_ = this->declare_parameter<double>("box_t1_angle_deg", 20.0);
+    box_height_m_ = this->declare_parameter<double>("box_height_m", 0.12);
+    box_t1_speed_ = this->declare_parameter<double>("box_t1_speed", 0.06);
+    box_t2_max_speed_ = this->declare_parameter<double>("box_t2_max_speed", 0.06);
+    box_t2_kp_ = this->declare_parameter<double>("box_t2_kp", 0.8);
+    box_z_tolerance_ = this->declare_parameter<double>("box_z_tolerance", 0.015);
+    box_angle_tolerance_deg_ =
+      this->declare_parameter<double>("box_angle_tolerance_deg", 2.0);
+    box_t1_direction_sign_ = this->declare_parameter<double>("box_t1_direction_sign", 1.0);
+    box_force_command_ = this->declare_parameter<double>("box_force_command", 0.024);
+    box_contact_settle_sec_ =
+      this->declare_parameter<double>("box_contact_settle_sec", 4.0);
+    box_approach_speed_ = this->declare_parameter<double>("box_approach_speed", 0.12);
+    box_return_speed_ = this->declare_parameter<double>("box_return_speed", 0.12);
+    box_position_tolerance_ =
+      this->declare_parameter<double>("box_position_tolerance", 0.025);
+    box_stage_timeout_sec_ =
+      this->declare_parameter<double>("box_stage_timeout_sec", 35.0);
+    box_feedback_timeout_sec_ =
+      this->declare_parameter<double>("box_feedback_timeout_sec", 0.75);
+    box_max_t1_travel_m_ = this->declare_parameter<double>("box_max_t1_travel_m", 0.35);
+    box_min_t2_vertical_projection_ =
+      this->declare_parameter<double>("box_min_t2_vertical_projection", 0.35);
     command_frame_ = this->declare_parameter<std::string>("command_frame", loadSharedCommandFrameDefault());
     end_effector_offset_ = declareVector3Parameter("end_effector_offset", loadSharedEndEffectorOffsetDefault());
 
@@ -100,6 +133,7 @@ public:
     last_battery_display_update_ = std::chrono::steady_clock::now();
     has_latest_pose_ = false;
     has_latest_fw_cmd_ = false;
+    has_latest_fp_normal_ = false;
     command_initialized_ = true;
 
     last_inputs_.clear();
@@ -273,6 +307,7 @@ private:
 
     updateAutoTrajectory();
     updateHTrajectory();
+    updateBoxTrajectory();
     updateDisplayedBatteryVoltage();
     publishPositionCmd();
     drawStatusBlock();
@@ -281,8 +316,20 @@ private:
 
   void handleKey(char c)
   {
+    const bool any_auto_active =
+      auto_trajectory_active_ || h_trajectory_active_ || box_trajectory_active_;
+    if (any_auto_active && c == 'p') {
+      cancelAutoTrajectory("emergency DISARM");
+      cancelHTrajectory("emergency DISARM");
+      cancelBoxTrajectory("emergency DISARM", false);
+      cmd_xyz_yaw_[0] = cmd_xyz_yaw_[1] = cmd_xyz_yaw_[2] = 0.0;
+      publishKeyboardTrigger('p');
+      status_msg_ = "AUTO emergency DISARM requested";
+      return;
+    }
     if ((auto_trajectory_active_ && c != 'g') ||
-        (h_trajectory_active_ && c != 'h')) {
+        (h_trajectory_active_ && c != 'h') ||
+        (box_trajectory_active_ && c != 'b')) {
       // An interrupt has exactly the combined safety effect of pressing x, then u:
       // zero the active command and return to world-frame position mode.
       resetActiveCommand();
@@ -305,6 +352,7 @@ private:
     else if (c == 'f')  { publishKeyboardTrigger('f'); }
     else if (c == 'g')  { startAutoTrajectory(); }
     else if (c == 'h')  { startHTrajectory(); }
+    else if (c == 'b')  { startBoxTrajectory(); }
     else if (c == 'j')  { force_des_ += force_delta_; publishPositionControl(); updateForceStatus(); pushInputHistory("j : force += tick"); }
     else if (c == 'k')  { force_des_ -= force_delta_; publishPositionControl(); updateForceStatus(); pushInputHistory("k : force -= tick"); }
     else if (c == 'l')  { force_des_ = 0.0; publishPositionControl(); updateForceStatus(); pushInputHistory("l : force reset"); }
@@ -466,6 +514,7 @@ private:
   {
     cancelAutoTrajectory("x pressed");
     cancelHTrajectory("x pressed");
+    cancelBoxTrajectory("x pressed", false);
     if (usesVelocityCommands()) {
       cmd_xyz_yaw_[0] = 0.0;
       cmd_xyz_yaw_[1] = 0.0;
@@ -871,6 +920,320 @@ private:
     }
   }
 
+  enum class BoxStage
+  {
+    ApproachZ,
+    ApproachY,
+    ApproachX,
+    ContactSettle,
+    T1Out,
+    T2Up,
+    T1Back,
+    T2Down,
+    ReturnX,
+    ReturnY,
+    ReturnZ,
+  };
+
+  void setBoxStage(const BoxStage stage, const char * status)
+  {
+    box_stage_ = stage;
+    box_stage_start_time_ = std::chrono::steady_clock::now();
+    cmd_xyz_yaw_[0] = 0.0;
+    cmd_xyz_yaw_[1] = 0.0;
+    cmd_xyz_yaw_[2] = 0.0;
+    status_msg_ = status;
+  }
+
+  bool boxParametersValid() const
+  {
+    const std::array<double, 22> finite_values{{
+      box_start_x_, box_start_y_, box_start_z_, box_home_x_, box_home_y_, box_home_z_,
+      box_t1_angle_deg_, box_height_m_, box_t1_speed_, box_t2_max_speed_, box_t2_kp_,
+      box_z_tolerance_, box_angle_tolerance_deg_, box_t1_direction_sign_,
+      box_force_command_, box_contact_settle_sec_, box_approach_speed_, box_return_speed_,
+      box_position_tolerance_, box_stage_timeout_sec_, box_feedback_timeout_sec_,
+      box_max_t1_travel_m_}};
+    if (!std::all_of(
+        finite_values.begin(), finite_values.end(),
+        [](double value) {return std::isfinite(value);}) ||
+      !std::isfinite(box_min_t2_vertical_projection_))
+    {
+      return false;
+    }
+    return std::abs(box_t1_angle_deg_) > 0.0 &&
+           box_angle_tolerance_deg_ < std::abs(box_t1_angle_deg_) &&
+           box_height_m_ > box_z_tolerance_ &&
+           box_t1_speed_ > 0.0 && box_t2_max_speed_ > 0.0 && box_t2_kp_ > 0.0 &&
+           box_z_tolerance_ > 0.0 && box_angle_tolerance_deg_ > 0.0 &&
+           std::abs(box_t1_direction_sign_) > 0.0 && box_force_command_ >= 0.0 &&
+           box_contact_settle_sec_ >= 0.0 &&
+           box_contact_settle_sec_ <= box_stage_timeout_sec_ &&
+           box_approach_speed_ > 0.0 &&
+           box_return_speed_ > 0.0 && box_position_tolerance_ > 0.0 &&
+           box_stage_timeout_sec_ > 0.0 && box_feedback_timeout_sec_ > 0.0 &&
+           box_max_t1_travel_m_ > 0.0 &&
+           box_min_t2_vertical_projection_ > 0.0 &&
+           box_min_t2_vertical_projection_ <= 1.0;
+  }
+
+  void startBoxTrajectory()
+  {
+    if (box_trajectory_active_) {
+      status_msg_ = "BOX AUTO already active";
+      return;
+    }
+    if (auto_trajectory_active_ || h_trajectory_active_) {
+      status_msg_ = "BOX AUTO rejected: another automatic trajectory is active";
+      return;
+    }
+    if (!has_latest_fw_cmd_) {
+      status_msg_ = "BOX AUTO rejected: waiting for firmware command feedback";
+      pushInputHistory("b : AUTO rejected (no command feedback)");
+      return;
+    }
+    if (!boxParametersValid()) {
+      status_msg_ = "BOX AUTO rejected: invalid command.yaml parameters";
+      pushInputHistory("b : AUTO rejected (invalid params)");
+      return;
+    }
+
+    current_command_reference_ =
+      crazyflie_interfaces::msg::PositionControl::REFERENCE_END_EFFECTOR;
+    command_frame_ = "end_effector";
+    current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
+    velocity_mode_command_ready_time_ = std::chrono::steady_clock::time_point{};
+    publishPositionControl();
+    box_trajectory_active_ = true;
+    setBoxStage(BoxStage::ApproachZ, "BOX AUTO: approach EE Z");
+    pushInputHistory("b : start Experiment 3 square drawing");
+  }
+
+  void cancelBoxTrajectory(const char * reason, bool leave_contact_mode)
+  {
+    if (!box_trajectory_active_) {
+      return;
+    }
+    box_trajectory_active_ = false;
+    cmd_xyz_yaw_[0] = cmd_xyz_yaw_[1] = cmd_xyz_yaw_[2] = 0.0;
+    if (leave_contact_mode) {
+      current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
+      velocity_mode_command_ready_time_ = std::chrono::steady_clock::time_point{};
+      publishPositionControl();
+    }
+    status_msg_ = std::string("BOX AUTO canceled: ") + reason;
+    pushInputHistory(status_msg_);
+    RCLCPP_ERROR(this->get_logger(), "%s", status_msg_.c_str());
+  }
+
+  bool boxCommandAxisTowardTarget(
+    const std::size_t axis, const double target, const double speed)
+  {
+    const auto command = latestFwCommandInActiveReferenceFrame();
+    const double error = target - command[axis];
+    cmd_xyz_yaw_[0] = cmd_xyz_yaw_[1] = cmd_xyz_yaw_[2] = 0.0;
+    if (std::abs(error) <= box_position_tolerance_) {
+      return true;
+    }
+    cmd_xyz_yaw_[axis] = std::copysign(std::min(speed, std::abs(error)), error);
+    return false;
+  }
+
+  bool boxFeedbackFresh(
+    const std::chrono::steady_clock::time_point & stamp,
+    const std::chrono::steady_clock::time_point now) const
+  {
+    return stamp.time_since_epoch().count() > 0 &&
+           std::chrono::duration<double>(now - stamp).count() <= box_feedback_timeout_sec_;
+  }
+
+  bool boxContactFrameValid() const
+  {
+    const auto finite3 = [](const std::array<double, 3> & vector) {
+        return std::all_of(
+          vector.begin(), vector.end(), [](double value) {return std::isfinite(value);});
+      };
+    const auto norm3 = [](const std::array<double, 3> & vector) {
+        return std::sqrt(
+          vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+      };
+    const auto dot3 = [](const std::array<double, 3> & a, const std::array<double, 3> & b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      };
+    if (!std::isfinite(box_ee_z_) || !finite3(box_normal_) ||
+      !finite3(box_t1_) || !finite3(box_t2_))
+    {
+      return false;
+    }
+    const double normal_norm = norm3(box_normal_);
+    const double t1_norm = norm3(box_t1_);
+    const double t2_norm = norm3(box_t2_);
+    if (normal_norm < 0.5 || t1_norm < 0.5 || t2_norm < 0.5 ||
+      normal_norm > 1.5 || t1_norm > 1.5 || t2_norm > 1.5 ||
+      std::hypot(box_normal_[0], box_normal_[1]) < 1.0e-3)
+    {
+      return false;
+    }
+    return std::abs(dot3(box_normal_, box_t1_) / (normal_norm * t1_norm)) < 0.35 &&
+           std::abs(dot3(box_normal_, box_t2_) / (normal_norm * t2_norm)) < 0.35 &&
+           std::abs(dot3(box_t1_, box_t2_) / (t1_norm * t2_norm)) < 0.35;
+  }
+
+  bool boxAngleReached(const double target, const double direction) const
+  {
+    const double tolerance = box_angle_tolerance_deg_ * M_PI / 180.0;
+    return direction > 0.0 ? box_normal_azimuth_unwrapped_ >= target - tolerance :
+           box_normal_azimuth_unwrapped_ <= target + tolerance;
+  }
+
+  void updateBoxHeightStage(const double target, const BoxStage next, const char * status)
+  {
+    const double error = target - box_ee_z_;
+    if (std::abs(error) <= box_z_tolerance_) {
+      setBoxStage(next, status);
+      return;
+    }
+    if (std::abs(box_t2_[2]) < box_min_t2_vertical_projection_) {
+      cancelBoxTrajectory("t2 vertical projection below safety threshold", true);
+      return;
+    }
+    const double unsaturated = box_t2_kp_ * error / box_t2_[2];
+    cmd_xyz_yaw_[0] = 0.0;
+    cmd_xyz_yaw_[1] = 0.0;
+    cmd_xyz_yaw_[2] = std::max(
+      -box_t2_max_speed_, std::min(box_t2_max_speed_, unsaturated));
+    if (!std::isfinite(cmd_xyz_yaw_[2])) {
+      cancelBoxTrajectory("non-finite t2 command", true);
+    }
+  }
+
+  void updateBoxTrajectory()
+  {
+    if (!box_trajectory_active_) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed =
+      std::chrono::duration<double>(now - box_stage_start_time_).count();
+    if (!boxFeedbackFresh(last_fw_cmd_time_, now)) {
+      cancelBoxTrajectory("firmware command feedback timeout", true);
+      return;
+    }
+    if (elapsed > box_stage_timeout_sec_) {
+      cancelBoxTrajectory("stage timeout", true);
+      return;
+    }
+
+    const bool drawing_stage =
+      box_stage_ == BoxStage::T1Out || box_stage_ == BoxStage::T2Up ||
+      box_stage_ == BoxStage::T1Back || box_stage_ == BoxStage::T2Down;
+    if (drawing_stage &&
+      (!has_latest_fp_normal_ || !boxFeedbackFresh(last_fp_normal_time_, now)))
+    {
+      cancelBoxTrajectory("normal-estimator feedback timeout", true);
+      return;
+    }
+    if (drawing_stage && !boxContactFrameValid()) {
+      cancelBoxTrajectory("invalid estimated contact frame", true);
+      return;
+    }
+
+    const double angle_delta = box_t1_angle_deg_ * M_PI / 180.0;
+    const double t1_command_sign =
+      std::copysign(1.0, box_t1_angle_deg_) * std::copysign(1.0, box_t1_direction_sign_);
+    switch (box_stage_) {
+      case BoxStage::ApproachZ:
+        if (boxCommandAxisTowardTarget(2, box_start_z_, box_approach_speed_)) {
+          setBoxStage(BoxStage::ApproachY, "BOX AUTO: approach EE Y");
+        }
+        break;
+      case BoxStage::ApproachY:
+        if (boxCommandAxisTowardTarget(1, box_start_y_, box_approach_speed_)) {
+          setBoxStage(BoxStage::ApproachX, "BOX AUTO: approach EE X");
+        }
+        break;
+      case BoxStage::ApproachX:
+        if (boxCommandAxisTowardTarget(0, box_start_x_, box_approach_speed_)) {
+          current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_VELOCITY;
+          force_des_ = box_force_command_;
+          publishPositionControl();
+          setBoxStage(BoxStage::ContactSettle, "BOX AUTO: contact settling");
+        }
+        break;
+      case BoxStage::ContactSettle:
+        if (elapsed >= box_contact_settle_sec_) {
+          if (!has_latest_fp_normal_ || !boxFeedbackFresh(last_fp_normal_time_, now)) {
+            cancelBoxTrajectory("no fresh normal feedback after contact settling", true);
+            break;
+          }
+          if (!boxContactFrameValid()) {
+            cancelBoxTrajectory("invalid contact frame after contact settling", true);
+            break;
+          }
+          box_z0_ = box_ee_z_;
+          box_theta0_ = box_normal_azimuth_raw_;
+          box_normal_azimuth_unwrapped_ = box_theta0_;
+          box_last_normal_azimuth_raw_ = box_normal_azimuth_raw_;
+          setBoxStage(BoxStage::T1Out, "BOX AUTO: segment 1, t1 angular feedback");
+        }
+        break;
+      case BoxStage::T1Out:
+        if (boxAngleReached(box_theta0_ + angle_delta, angle_delta)) {
+          setBoxStage(BoxStage::T2Up, "BOX AUTO: segment 2, t2 height P control");
+        } else if (box_t1_speed_ * elapsed > box_max_t1_travel_m_) {
+          cancelBoxTrajectory("segment 1 maximum t1 travel exceeded", true);
+        } else {
+          cmd_xyz_yaw_[0] = 0.0;
+          cmd_xyz_yaw_[1] = t1_command_sign * box_t1_speed_;
+          cmd_xyz_yaw_[2] = 0.0;
+        }
+        break;
+      case BoxStage::T2Up:
+        updateBoxHeightStage(
+          box_z0_ + box_height_m_, BoxStage::T1Back,
+          "BOX AUTO: segment 3, reverse t1 angular feedback");
+        break;
+      case BoxStage::T1Back:
+        if (boxAngleReached(box_theta0_, -angle_delta)) {
+          setBoxStage(BoxStage::T2Down, "BOX AUTO: segment 4, t2 height P control");
+        } else if (box_t1_speed_ * elapsed > box_max_t1_travel_m_) {
+          cancelBoxTrajectory("segment 3 maximum t1 travel exceeded", true);
+        } else {
+          cmd_xyz_yaw_[0] = 0.0;
+          cmd_xyz_yaw_[1] = -t1_command_sign * box_t1_speed_;
+          cmd_xyz_yaw_[2] = 0.0;
+        }
+        break;
+      case BoxStage::T2Down:
+        updateBoxHeightStage(box_z0_, BoxStage::ReturnX, "BOX AUTO: contact off; return X");
+        if (box_stage_ == BoxStage::ReturnX && box_trajectory_active_) {
+          current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
+          velocity_mode_command_ready_time_ = std::chrono::steady_clock::time_point{};
+          publishPositionControl();
+        }
+        break;
+      case BoxStage::ReturnX:
+        if (boxCommandAxisTowardTarget(0, box_home_x_, box_return_speed_)) {
+          setBoxStage(BoxStage::ReturnY, "BOX AUTO: return Y");
+        }
+        break;
+      case BoxStage::ReturnY:
+        if (boxCommandAxisTowardTarget(1, box_home_y_, box_return_speed_)) {
+          setBoxStage(BoxStage::ReturnZ, "BOX AUTO: return Z");
+        }
+        break;
+      case BoxStage::ReturnZ:
+        if (boxCommandAxisTowardTarget(2, box_home_z_, box_return_speed_)) {
+          box_trajectory_active_ = false;
+          cmd_xyz_yaw_[0] = cmd_xyz_yaw_[1] = cmd_xyz_yaw_[2] = 0.0;
+          publishKeyboardTrigger('p');
+          status_msg_ = "BOX AUTO complete; returned home and DISARMED";
+          pushInputHistory("b : AUTO complete -> home, p");
+        }
+        break;
+    }
+  }
+
   void publishPositionCmd()
   {
     if (!command_initialized_) {
@@ -1037,6 +1400,36 @@ private:
     latest_fw_cmd_xyz_[1] = msg->values[4];
     latest_fw_cmd_xyz_[2] = msg->values[5];
     has_latest_fw_cmd_ = true;
+    last_fw_cmd_time_ = std::chrono::steady_clock::now();
+  }
+
+  void fpNormalCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
+  {
+    // fp_normal is the normal-estimator CSV row without its first eight columns:
+    // [eePos(0:2), eeCmd(3:5), vc(6:8), fcHat(9:11), fnHat(12),
+    //  nHat(13:15), nDot(16:18), kappa(19), t1(20:22), t2(23:25), ...].
+    if (!msg || msg->data.size() < 26) {
+      return;
+    }
+    box_ee_z_ = msg->data[2];
+    for (std::size_t i = 0; i < 3; ++i) {
+      box_normal_[i] = msg->data[13 + i];
+      box_t1_[i] = msg->data[20 + i];
+      box_t2_[i] = msg->data[23 + i];
+    }
+    const double azimuth = std::atan2(box_normal_[1], box_normal_[0]);
+    if (std::isfinite(azimuth)) {
+      if (has_latest_fp_normal_ && std::isfinite(box_last_normal_azimuth_raw_)) {
+        box_normal_azimuth_unwrapped_ +=
+          std::remainder(azimuth - box_last_normal_azimuth_raw_, 2.0 * M_PI);
+      } else {
+        box_normal_azimuth_unwrapped_ = azimuth;
+      }
+      box_normal_azimuth_raw_ = azimuth;
+      box_last_normal_azimuth_raw_ = azimuth;
+    }
+    has_latest_fp_normal_ = true;
+    last_fp_normal_time_ = std::chrono::steady_clock::now();
   }
 
   void mobForceCallback(const crazyflie_interfaces::msg::LogDataGeneric::SharedPtr msg)
@@ -1086,7 +1479,7 @@ private:
     drawSepLine(ROW_USAGE_HEADER, "usage");
     mvprintw(ROW_USAGE_1, 0, "velocity: w/s(x), a/d(y), e/q(z), z/c(yaw), x(zero vel), i(contact on)");
     mvprintw(ROW_USAGE_2, 0, "velocity: w/s/a/d/e/q(v), u(contact off)");
-    mvprintw(ROW_USAGE_3, 0, "g/h: automatic trajectories, any other key: cancel, o/p: arm/disarm, t: quit");
+    mvprintw(ROW_USAGE_3, 0, "g/h/b: automatic trajectories, any other key: cancel, o/p: arm/disarm, t: quit");
 
     drawSepLine(ROW_STATUS_HEADER, "status");
     mvprintw(ROW_STATUS_MODE, 0, "mode: ");
@@ -1195,6 +1588,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
   rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr fw_cmd_sub_;
   rclcpp::Subscription<crazyflie_interfaces::msg::LogDataGeneric>::SharedPtr mob_force_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr fp_normal_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   std::array<double, 4> cmd_xyz_yaw_;
@@ -1229,17 +1623,52 @@ private:
   double h_d_motion_sec_;
   double h_motion_speed_;
   double h_final_wait_sec_;
+  double box_start_x_;
+  double box_start_y_;
+  double box_start_z_;
+  double box_home_x_;
+  double box_home_y_;
+  double box_home_z_;
+  double box_t1_angle_deg_;
+  double box_height_m_;
+  double box_t1_speed_;
+  double box_t2_max_speed_;
+  double box_t2_kp_;
+  double box_z_tolerance_;
+  double box_angle_tolerance_deg_;
+  double box_t1_direction_sign_;
+  double box_force_command_;
+  double box_contact_settle_sec_;
+  double box_approach_speed_;
+  double box_return_speed_;
+  double box_position_tolerance_;
+  double box_stage_timeout_sec_;
+  double box_feedback_timeout_sec_;
+  double box_max_t1_travel_m_;
+  double box_min_t2_vertical_projection_;
+  double box_ee_z_{std::numeric_limits<double>::quiet_NaN()};
+  double box_normal_azimuth_raw_{std::numeric_limits<double>::quiet_NaN()};
+  double box_last_normal_azimuth_raw_{std::numeric_limits<double>::quiet_NaN()};
+  double box_normal_azimuth_unwrapped_{0.0};
+  double box_theta0_{0.0};
+  double box_z0_{0.0};
   double latest_battery_voltage_;
   double displayed_battery_voltage_;
   uint8_t current_mode_;
   uint8_t current_command_reference_;
   bool has_latest_pose_;
   bool has_latest_fw_cmd_;
+  bool has_latest_fp_normal_;
   bool command_initialized_{false};
   bool auto_trajectory_active_{false};
   AutoStage auto_stage_{AutoStage::ApproachZ};
   bool h_trajectory_active_{false};
   HStage h_stage_{HStage::ApproachZ};
+  bool box_trajectory_active_{false};
+  BoxStage box_stage_{BoxStage::ApproachZ};
+  std::array<double, 3> box_normal_{{0.0, 0.0, 0.0}};
+  std::array<double, 3> box_t1_{{0.0, 0.0, 0.0}};
+  std::array<double, 3> box_t2_{{0.0, 0.0, 0.0}};
   std::array<double, 2> h_reference_xy_{{0.0, 0.0}};
   int h_reference_crossings_{0};
   bool h_inside_reference_tolerance_{true};
@@ -1249,6 +1678,9 @@ private:
   std::chrono::steady_clock::time_point velocity_mode_command_ready_time_{};
   std::chrono::steady_clock::time_point auto_stage_start_time_{};
   std::chrono::steady_clock::time_point h_stage_start_time_{};
+  std::chrono::steady_clock::time_point box_stage_start_time_{};
+  std::chrono::steady_clock::time_point last_fw_cmd_time_{};
+  std::chrono::steady_clock::time_point last_fp_normal_time_{};
   std::deque<std::string> last_inputs_;
 };
 

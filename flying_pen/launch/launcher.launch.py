@@ -13,12 +13,6 @@ from launch_ros.actions import Node
 def launch_setup(context, *args, **kwargs):
     del context, args, kwargs
 
-    base_bag_dir = os.path.expanduser("~/hitl_ws/src/flying_pen/bag/2nd_exp")
-    os.makedirs(base_bag_dir, exist_ok=True)
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    bag_dir = os.path.join(base_bag_dir, f"rosbag2_{ts}")
-
     fp_share = get_package_share_directory("flying_pen")
     log_player_share = get_package_share_directory("log_player")
 
@@ -32,6 +26,13 @@ def launch_setup(context, *args, **kwargs):
     shared_su_params = os.path.join(get_package_share_directory("crazyflie"), "config", "su_params.yaml")
     with open(runtime_params, "r", encoding="utf-8") as f:
         runtime_cfg = yaml.safe_load(f) or {}
+    logger_cfg = runtime_cfg.get("data_logging", {}).get("ros__parameters", {})
+    base_bag_dir = os.path.expanduser(
+        logger_cfg.get("csv_dir", "~/hitl_ws/src/flying_pen/bag/3rd_1110")
+    )
+    os.makedirs(base_bag_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    bag_dir = os.path.join(base_bag_dir, f"rosbag2_{ts}")
     with open(shared_su_params, "r", encoding="utf-8") as f:
         shared_su_cfg = yaml.safe_load(f) or {}
     su_wrench_cfg = shared_su_cfg.get("robot_types", {}).get("cf21", {}).get("firmware_params", {}).get("su_wrench", {})
@@ -55,7 +56,6 @@ def launch_setup(context, *args, **kwargs):
         "reference_surface.alpha": rviz_geometry_cfg.get("alpha", 0.22),
     }
     runtime_mode = runtime_cfg.get("runtime", {}).get("ros__parameters", {}).get("mode", "default")
-    logger_cfg = runtime_cfg.get("data_logging", {}).get("ros__parameters", {})
     logger_topic = logger_cfg.get("publish_topic", "/data_logging_msg")
     rviz_config = os.path.join(fp_share, "config", "force_control.rviz")
     urdf_path = urdf_debug_path if runtime_mode == "debug" else urdf_default_path

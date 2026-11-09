@@ -4,7 +4,7 @@ command_publisher:
     velocity_tick: [0.06, 0.06, 0.06]
     yaw_tick_deg: 2.0
     force_tick: 0.024
-    # g-key automatic surface trajectory
+    # g-key automatic surface trajectory 1번실험용
     auto_approach_speed: 0.12       # [m/s], sequential approach and X/Z return
     auto_target_x: 1.60             # [m], EE contact target
     auto_target_y: 0.02              # [m], EE command Y target
@@ -18,7 +18,7 @@ command_publisher:
     auto_fourth_wait_sec: 10.0      # [s], fourth pause (after first downward pass)
     auto_final_wait_sec: 10.0       # [s], wait after the final downward pass
 
-    # h-key automatic return-crossing trajectory
+    # h-key automatic return-crossing trajectory 2번실험용
     h_auto_approach_speed: 0.12     # [m/s], target approach and XYZ return speed
     h_auto_target_x: 0.475           # [m], configurable EE contact target X
     h_auto_target_y: 0.141           # [m], configurable EE contact target Y
@@ -29,3 +29,41 @@ command_publisher:
     h_d_motion_sec: 6.0             # [s], initial d-direction motion
     h_motion_speed: 0.06            # [m/s], base d/a speed; doubles after second return
     h_final_wait_sec: 5.0           # [s], wait after third return before u + home
+
+    # ==================================================
+    # Experiment 3: contact-frame square drawing (b key)
+    # ==================================================
+    # Initial and home positions are end-effector positions [m].
+    box_start_x: 0.475
+    box_start_y: 0.141
+    box_start_z: 0.80
+    box_home_x: 0.0
+    box_home_y: 0.0
+    box_home_z: 0.0
+
+    # Square geometry.
+    box_t1_angle_deg: 20.0          # signed normal-azimuth change for each t1 side
+    box_height_m: 0.12              # positive World-Z height change
+
+    # Contact-frame tangential commands.
+    box_t1_speed: 0.06              # magnitude of firmware t1 coefficient [m/s]
+    box_t2_max_speed: 0.06          # saturation for firmware t2 coefficient [m/s]
+    box_t2_kp: 0.8                  # Boom-tip World-Z P gain [1/s]
+    box_z_tolerance: 0.015          # Boom-tip height termination tolerance [m]
+    box_angle_tolerance_deg: 2.0    # normal-azimuth termination tolerance [deg]
+    box_t1_direction_sign: 1.0      # flip if +t1 changes azimuth opposite to expectation
+
+    # Contact initialization.
+    box_force_command: 0.024
+    box_contact_settle_sec: 4.0
+
+    # Sequential Z -> Y -> X approach and X -> Y -> Z return.
+    box_approach_speed: 0.12
+    box_return_speed: 0.12
+    box_position_tolerance: 0.025
+
+    # Feedback and travel safety limits.
+    box_stage_timeout_sec: 35.0
+    box_feedback_timeout_sec: 0.75
+    box_max_t1_travel_m: 0.35
+    box_min_t2_vertical_projection: 0.35
