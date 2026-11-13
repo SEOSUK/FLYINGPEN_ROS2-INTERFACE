@@ -7,12 +7,12 @@ robot_types:
         rOffX: 0.11
         rOffY: 0.0
         rOffZ: 0.017
-        comOffX: -0.000504  # body-frame CoM offset x [m]
-        comOffY: -0.000034  # body-frame CoM offset y [m]
+        comOffX: -0.000624  # body-frame CoM offset x [m]
+        comOffY: 0.000429  # body-frame CoM offset y [m]
         comOffZ: 0.0  # body-frame CoM offset z [m]
       imu_sensors:
-        accTrimRoll: -0.379555
-        accTrimPitch: 0.403737
+        accTrimRoll: -0.454362
+        accTrimPitch: 0.492909
 
       su_position:
         # 힘제어 쪽

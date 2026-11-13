@@ -42,6 +42,8 @@ public:
 
     key_pub_ = this->create_publisher<std_msgs::msg::String>(
       "keyboard_input", 10);
+    box_diagnostics_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
+      "cf2/flying_pen/box_diagnostics", 10);
 
     calibration_status_sub_ = this->create_subscription<std_msgs::msg::String>(
       "calibration_status", 10,
@@ -101,6 +103,16 @@ public:
     box_t1_speed_ = this->declare_parameter<double>("box_t1_speed", 0.06);
     box_t2_max_speed_ = this->declare_parameter<double>("box_t2_max_speed", 0.06);
     box_t2_kp_ = this->declare_parameter<double>("box_t2_kp", 0.8);
+    box_t2_ki_ = this->declare_parameter<double>("box_t2_ki", 0.0);
+    box_t2_kd_ = this->declare_parameter<double>("box_t2_kd", 0.0);
+    box_t2_integral_limit_ =
+      this->declare_parameter<double>("box_t2_integral_limit", 0.05);
+    box_t2_derivative_cutoff_hz_ =
+      this->declare_parameter<double>("box_t2_derivative_cutoff_hz", 3.0);
+    box_t1_z_hold_kp_ = this->declare_parameter<double>("box_t1_z_hold_kp", 0.5);
+    box_t1_z_hold_vmax_ = this->declare_parameter<double>("box_t1_z_hold_vmax", 0.015);
+    box_t1_z_hold_deadband_ =
+      this->declare_parameter<double>("box_t1_z_hold_deadband", 0.005);
     box_z_tolerance_ = this->declare_parameter<double>("box_z_tolerance", 0.015);
     box_angle_tolerance_deg_ =
       this->declare_parameter<double>("box_angle_tolerance_deg", 2.0);
@@ -119,6 +131,8 @@ public:
     box_max_t1_travel_m_ = this->declare_parameter<double>("box_max_t1_travel_m", 0.35);
     box_min_t2_vertical_projection_ =
       this->declare_parameter<double>("box_min_t2_vertical_projection", 0.35);
+    box_repeat_continuously_ =
+      this->declare_parameter<bool>("box_repeat_continuously", true);
     command_frame_ = this->declare_parameter<std::string>("command_frame", loadSharedCommandFrameDefault());
     end_effector_offset_ = declareVector3Parameter("end_effector_offset", loadSharedEndEffectorOffsetDefault());
 
@@ -307,7 +321,10 @@ private:
 
     updateAutoTrajectory();
     updateHTrajectory();
+    box_diag_target_z_ = std::numeric_limits<double>::quiet_NaN();
+    box_diag_t1_hold_u2_ = std::numeric_limits<double>::quiet_NaN();
     updateBoxTrajectory();
+    publishBoxDiagnostics();
     updateDisplayedBatteryVoltage();
     publishPositionCmd();
     drawStatusBlock();
@@ -926,6 +943,7 @@ private:
     ApproachY,
     ApproachX,
     ContactSettle,
+    MoveToLeftCorner,
     T1Out,
     T2Up,
     T1Back,
@@ -939,6 +957,13 @@ private:
   {
     box_stage_ = stage;
     box_stage_start_time_ = std::chrono::steady_clock::now();
+    if (stage == BoxStage::T2Up || stage == BoxStage::T2Down) {
+      box_t2_integral_ = 0.0;
+      box_t2_previous_error_ = 0.0;
+      box_t2_filtered_derivative_ = 0.0;
+      box_t2_pid_initialized_ = false;
+      box_t2_pid_last_time_ = std::chrono::steady_clock::time_point{};
+    }
     cmd_xyz_yaw_[0] = 0.0;
     cmd_xyz_yaw_[1] = 0.0;
     cmd_xyz_yaw_[2] = 0.0;
@@ -947,9 +972,11 @@ private:
 
   bool boxParametersValid() const
   {
-    const std::array<double, 22> finite_values{{
+    const std::array<double, 29> finite_values{{
       box_start_x_, box_start_y_, box_start_z_, box_home_x_, box_home_y_, box_home_z_,
       box_t1_angle_deg_, box_height_m_, box_t1_speed_, box_t2_max_speed_, box_t2_kp_,
+      box_t2_ki_, box_t2_kd_, box_t2_integral_limit_, box_t2_derivative_cutoff_hz_,
+      box_t1_z_hold_kp_, box_t1_z_hold_vmax_, box_t1_z_hold_deadband_,
       box_z_tolerance_, box_angle_tolerance_deg_, box_t1_direction_sign_,
       box_force_command_, box_contact_settle_sec_, box_approach_speed_, box_return_speed_,
       box_position_tolerance_, box_stage_timeout_sec_, box_feedback_timeout_sec_,
@@ -965,6 +992,10 @@ private:
            box_angle_tolerance_deg_ < std::abs(box_t1_angle_deg_) &&
            box_height_m_ > box_z_tolerance_ &&
            box_t1_speed_ > 0.0 && box_t2_max_speed_ > 0.0 && box_t2_kp_ > 0.0 &&
+           box_t2_ki_ >= 0.0 && box_t2_kd_ >= 0.0 &&
+           box_t2_integral_limit_ > 0.0 && box_t2_derivative_cutoff_hz_ > 0.0 &&
+           box_t1_z_hold_kp_ > 0.0 && box_t1_z_hold_vmax_ > 0.0 &&
+           box_t1_z_hold_deadband_ >= 0.0 &&
            box_z_tolerance_ > 0.0 && box_angle_tolerance_deg_ > 0.0 &&
            std::abs(box_t1_direction_sign_) > 0.0 && box_force_command_ >= 0.0 &&
            box_contact_settle_sec_ >= 0.0 &&
@@ -980,7 +1011,9 @@ private:
   void startBoxTrajectory()
   {
     if (box_trajectory_active_) {
-      status_msg_ = "BOX AUTO already active";
+      box_stop_requested_ = true;
+      status_msg_ = "BOX AUTO: stop requested; return home after current square";
+      pushInputHistory("b : stop after current square");
       return;
     }
     if (auto_trajectory_active_ || h_trajectory_active_) {
@@ -1004,6 +1037,8 @@ private:
     current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
     velocity_mode_command_ready_time_ = std::chrono::steady_clock::time_point{};
     publishPositionControl();
+    box_stop_requested_ = false;
+    box_completed_squares_ = 0;
     box_trajectory_active_ = true;
     setBoxStage(BoxStage::ApproachZ, "BOX AUTO: approach EE Z");
     pushInputHistory("b : start Experiment 3 square drawing");
@@ -1086,6 +1121,29 @@ private:
            box_normal_azimuth_unwrapped_ <= target + tolerance;
   }
 
+  bool applyBoxT1HeightHold(const double target_z)
+  {
+    box_diag_target_z_ = target_z;
+    if (std::abs(box_t2_[2]) < box_min_t2_vertical_projection_) {
+      cancelBoxTrajectory("t1 height hold: t2 vertical projection below threshold", true);
+      return false;
+    }
+    const double error = target_z - box_ee_z_;
+    double correction = 0.0;
+    if (std::abs(error) > box_t1_z_hold_deadband_) {
+      const double unsaturated = box_t1_z_hold_kp_ * error / box_t2_[2];
+      correction = std::max(
+        -box_t1_z_hold_vmax_, std::min(box_t1_z_hold_vmax_, unsaturated));
+    }
+    if (!std::isfinite(correction)) {
+      cancelBoxTrajectory("non-finite t1 height-hold command", true);
+      return false;
+    }
+    box_diag_t1_hold_u2_ = correction;
+    cmd_xyz_yaw_[2] = correction;
+    return true;
+  }
+
   void updateBoxHeightStage(const double target, const BoxStage next, const char * status)
   {
     const double error = target - box_ee_z_;
@@ -1097,7 +1155,46 @@ private:
       cancelBoxTrajectory("t2 vertical projection below safety threshold", true);
       return;
     }
-    const double unsaturated = box_t2_kp_ * error / box_t2_[2];
+    const auto now = std::chrono::steady_clock::now();
+    double derivative = 0.0;
+    double integral_candidate = box_t2_integral_;
+    if (box_t2_pid_initialized_) {
+      const double dt = std::chrono::duration<double>(now - box_t2_pid_last_time_).count();
+      if (std::isfinite(dt) && dt > 1.0e-4 && dt < box_feedback_timeout_sec_) {
+        const double raw_derivative = (error - box_t2_previous_error_) / dt;
+        const double rc = 1.0 / (2.0 * M_PI * box_t2_derivative_cutoff_hz_);
+        const double alpha = dt / (rc + dt);
+        box_t2_filtered_derivative_ +=
+          alpha * (raw_derivative - box_t2_filtered_derivative_);
+        derivative = box_t2_filtered_derivative_;
+        integral_candidate = std::max(
+          -box_t2_integral_limit_,
+          std::min(box_t2_integral_limit_, box_t2_integral_ + error * dt));
+      }
+    } else {
+      box_t2_pid_initialized_ = true;
+    }
+    box_t2_previous_error_ = error;
+    box_t2_pid_last_time_ = now;
+
+    // Conditional-integration anti-windup: reject an integral update when
+    // it would push an already saturated contact-frame command farther out.
+    const double candidate_vertical_velocity =
+      box_t2_kp_ * error + box_t2_ki_ * integral_candidate + box_t2_kd_ * derivative;
+    const double candidate_command = candidate_vertical_velocity / box_t2_[2];
+    const double integral_command_change =
+      box_t2_ki_ * (integral_candidate - box_t2_integral_) / box_t2_[2];
+    const bool saturating_farther =
+      std::abs(candidate_command) > box_t2_max_speed_ &&
+      candidate_command * integral_command_change > 0.0;
+    if (!saturating_farther) {
+      box_t2_integral_ = integral_candidate;
+    }
+
+    const double requested_vertical_velocity =
+      box_t2_kp_ * error + box_t2_ki_ * box_t2_integral_ +
+      box_t2_kd_ * derivative;
+    const double unsaturated = requested_vertical_velocity / box_t2_[2];
     cmd_xyz_yaw_[0] = 0.0;
     cmd_xyz_yaw_[1] = 0.0;
     cmd_xyz_yaw_[2] = std::max(
@@ -1125,8 +1222,9 @@ private:
     }
 
     const bool drawing_stage =
-      box_stage_ == BoxStage::T1Out || box_stage_ == BoxStage::T2Up ||
-      box_stage_ == BoxStage::T1Back || box_stage_ == BoxStage::T2Down;
+      box_stage_ == BoxStage::MoveToLeftCorner || box_stage_ == BoxStage::T1Out ||
+      box_stage_ == BoxStage::T2Up || box_stage_ == BoxStage::T1Back ||
+      box_stage_ == BoxStage::T2Down;
     if (drawing_stage &&
       (!has_latest_fp_normal_ || !boxFeedbackFresh(last_fp_normal_time_, now)))
     {
@@ -1171,10 +1269,25 @@ private:
             break;
           }
           box_z0_ = box_ee_z_;
-          box_theta0_ = box_normal_azimuth_raw_;
-          box_normal_azimuth_unwrapped_ = box_theta0_;
+          // Treat the settled contact point as the lower-right reference.
+          // First move one complete t1 side in reverse to the lower-left.
+          box_theta0_ = box_normal_azimuth_raw_ - angle_delta;
+          box_normal_azimuth_unwrapped_ = box_normal_azimuth_raw_;
           box_last_normal_azimuth_raw_ = box_normal_azimuth_raw_;
-          setBoxStage(BoxStage::T1Out, "BOX AUTO: segment 1, t1 angular feedback");
+          setBoxStage(
+            BoxStage::MoveToLeftCorner,
+            "BOX AUTO: positioning at lower-left corner");
+        }
+        break;
+      case BoxStage::MoveToLeftCorner:
+        if (boxAngleReached(box_theta0_, -angle_delta)) {
+          setBoxStage(BoxStage::T1Out, "BOX AUTO: lower-left reached; move right");
+        } else if (box_t1_speed_ * elapsed > box_max_t1_travel_m_) {
+          cancelBoxTrajectory("lower-left positioning maximum t1 travel exceeded", true);
+        } else {
+          cmd_xyz_yaw_[0] = 0.0;
+          cmd_xyz_yaw_[1] = -t1_command_sign * box_t1_speed_;
+          cmd_xyz_yaw_[2] = 0.0;
         }
         break;
       case BoxStage::T1Out:
@@ -1185,7 +1298,9 @@ private:
         } else {
           cmd_xyz_yaw_[0] = 0.0;
           cmd_xyz_yaw_[1] = t1_command_sign * box_t1_speed_;
-          cmd_xyz_yaw_[2] = 0.0;
+          if (!applyBoxT1HeightHold(box_z0_)) {
+            break;
+          }
         }
         break;
       case BoxStage::T2Up:
@@ -1201,17 +1316,32 @@ private:
         } else {
           cmd_xyz_yaw_[0] = 0.0;
           cmd_xyz_yaw_[1] = -t1_command_sign * box_t1_speed_;
-          cmd_xyz_yaw_[2] = 0.0;
+          if (!applyBoxT1HeightHold(box_z0_ + box_height_m_)) {
+            break;
+          }
         }
         break;
       case BoxStage::T2Down:
-        updateBoxHeightStage(box_z0_, BoxStage::ReturnX, "BOX AUTO: contact off; return X");
+      {
+        const bool finish = box_stop_requested_ || !box_repeat_continuously_;
+        updateBoxHeightStage(
+          box_z0_, finish ? BoxStage::ReturnX : BoxStage::T1Out,
+          finish ? "BOX AUTO: contact off; return X" :
+          "BOX AUTO: next square, segment 1");
+        if (box_stage_ == BoxStage::T1Out && box_trajectory_active_) {
+          ++box_completed_squares_;
+          status_msg_ = "BOX AUTO: square " + std::to_string(box_completed_squares_) +
+            " complete; repeating";
+          pushInputHistory(status_msg_);
+        }
         if (box_stage_ == BoxStage::ReturnX && box_trajectory_active_) {
+          ++box_completed_squares_;
           current_mode_ = crazyflie_interfaces::msg::PositionControl::MODE_POSITION;
           velocity_mode_command_ready_time_ = std::chrono::steady_clock::time_point{};
           publishPositionControl();
         }
         break;
+      }
       case BoxStage::ReturnX:
         if (boxCommandAxisTowardTarget(0, box_home_x_, box_return_speed_)) {
           setBoxStage(BoxStage::ReturnY, "BOX AUTO: return Y");
@@ -1254,6 +1384,18 @@ private:
     msg.z = static_cast<float>(cmd_xyz_yaw_[2]);
     msg.yaw = static_cast<float>(cmd_xyz_yaw_[3]);
     cf_position_pub_->publish(msg);
+  }
+
+  void publishBoxDiagnostics()
+  {
+    if (!box_diagnostics_pub_) {
+      return;
+    }
+    std_msgs::msg::Float64MultiArray msg;
+    msg.data = {
+      latest_fw_cmd_xyz_[2], box_ee_z_, box_diag_target_z_,
+      box_diag_t1_hold_u2_, box_fn_hat_};
+    box_diagnostics_pub_->publish(msg);
   }
 
   std::array<double, 3> rotateOffsetByYawDeg(double yaw_deg) const
@@ -1412,6 +1554,7 @@ private:
       return;
     }
     box_ee_z_ = msg->data[2];
+    box_fn_hat_ = msg->data[12];
     for (std::size_t i = 0; i < 3; ++i) {
       box_normal_[i] = msg->data[13 + i];
       box_t1_[i] = msg->data[20 + i];
@@ -1479,7 +1622,7 @@ private:
     drawSepLine(ROW_USAGE_HEADER, "usage");
     mvprintw(ROW_USAGE_1, 0, "velocity: w/s(x), a/d(y), e/q(z), z/c(yaw), x(zero vel), i(contact on)");
     mvprintw(ROW_USAGE_2, 0, "velocity: w/s/a/d/e/q(v), u(contact off)");
-    mvprintw(ROW_USAGE_3, 0, "g/h/b: automatic trajectories, any other key: cancel, o/p: arm/disarm, t: quit");
+    mvprintw(ROW_USAGE_3, 0, "g/h: auto, b: repeat square (b again: finish/home), other key: cancel, p: disarm");
 
     drawSepLine(ROW_STATUS_HEADER, "status");
     mvprintw(ROW_STATUS_MODE, 0, "mode: ");
@@ -1583,6 +1726,7 @@ private:
   rclcpp::Publisher<crazyflie_interfaces::msg::Position>::SharedPtr cf_position_pub_;
   rclcpp::Publisher<crazyflie_interfaces::msg::PositionControl>::SharedPtr position_control_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr key_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr box_diagnostics_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr calibration_status_sub_;
   rclcpp::Subscription<crazyflie_interfaces::msg::Status>::SharedPtr status_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
@@ -1634,6 +1778,13 @@ private:
   double box_t1_speed_;
   double box_t2_max_speed_;
   double box_t2_kp_;
+  double box_t2_ki_;
+  double box_t2_kd_;
+  double box_t2_integral_limit_;
+  double box_t2_derivative_cutoff_hz_;
+  double box_t1_z_hold_kp_;
+  double box_t1_z_hold_vmax_;
+  double box_t1_z_hold_deadband_;
   double box_z_tolerance_;
   double box_angle_tolerance_deg_;
   double box_t1_direction_sign_;
@@ -1646,12 +1797,20 @@ private:
   double box_feedback_timeout_sec_;
   double box_max_t1_travel_m_;
   double box_min_t2_vertical_projection_;
+  bool box_repeat_continuously_;
   double box_ee_z_{std::numeric_limits<double>::quiet_NaN()};
+  double box_fn_hat_{std::numeric_limits<double>::quiet_NaN()};
+  double box_diag_target_z_{std::numeric_limits<double>::quiet_NaN()};
+  double box_diag_t1_hold_u2_{std::numeric_limits<double>::quiet_NaN()};
   double box_normal_azimuth_raw_{std::numeric_limits<double>::quiet_NaN()};
   double box_last_normal_azimuth_raw_{std::numeric_limits<double>::quiet_NaN()};
   double box_normal_azimuth_unwrapped_{0.0};
   double box_theta0_{0.0};
   double box_z0_{0.0};
+  double box_t2_integral_{0.0};
+  double box_t2_previous_error_{0.0};
+  double box_t2_filtered_derivative_{0.0};
+  bool box_t2_pid_initialized_{false};
   double latest_battery_voltage_;
   double displayed_battery_voltage_;
   uint8_t current_mode_;
@@ -1665,6 +1824,8 @@ private:
   bool h_trajectory_active_{false};
   HStage h_stage_{HStage::ApproachZ};
   bool box_trajectory_active_{false};
+  bool box_stop_requested_{false};
+  std::size_t box_completed_squares_{0};
   BoxStage box_stage_{BoxStage::ApproachZ};
   std::array<double, 3> box_normal_{{0.0, 0.0, 0.0}};
   std::array<double, 3> box_t1_{{0.0, 0.0, 0.0}};
@@ -1681,6 +1842,7 @@ private:
   std::chrono::steady_clock::time_point box_stage_start_time_{};
   std::chrono::steady_clock::time_point last_fw_cmd_time_{};
   std::chrono::steady_clock::time_point last_fp_normal_time_{};
+  std::chrono::steady_clock::time_point box_t2_pid_last_time_{};
   std::deque<std::string> last_inputs_;
 };
 

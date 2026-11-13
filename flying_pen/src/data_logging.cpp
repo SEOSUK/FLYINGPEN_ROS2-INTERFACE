@@ -86,6 +86,9 @@ public:
       cf_ns_ + "/cmd_position", 10, std::bind(&DataLoggingNode::cmd_position, this, _1));
     position_control_sub_ = create_subscription<crazyflie_interfaces::msg::PositionControl>(
       cf_ns_ + "/cmd_position_control", 10, std::bind(&DataLoggingNode::position_control, this, _1));
+    box_diagnostics_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+      cf_ns_ + "/flying_pen/box_diagnostics", 10,
+      std::bind(&DataLoggingNode::box_diagnostics, this, _1));
     tag_sub_ = create_subscription<std_msgs::msg::String>("/flying_pen/debug_log_filename_tag", 10, std::bind(&DataLoggingNode::tag, this, _1));
     publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(publish_topic_, 10);
     normal_publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(
@@ -199,6 +202,12 @@ private:
       msg->position_mode == crazyflie_interfaces::msg::PositionControl::MODE_VELOCITY;
     position_control_received_ = true;
   }
+  void box_diagnostics(const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+    if (!msg || msg->data.size() < 5) return;
+    box_target_z_ = msg->data[2];
+    box_t1_z_hold_u2_ = msg->data[3];
+    box_diagnostics_received_ = true;
+  }
   void check_topics() {
     if (!mocap_received_) RCLCPP_ERROR(get_logger(), "No /poses entry for '%s'; mocap columns remain zero", robot_name_.c_str());
     if (!cf_pose_received_) RCLCPP_ERROR(get_logger(), "No data on %s/pose; attitude columns remain zero", cf_ns_.c_str());
@@ -277,7 +286,8 @@ private:
       "fp_normal_mobTorqueX,fp_normal_mobTorqueY,fp_normal_mobTorqueZ,"
       "fp_normal_etaHat,fp_normal_batteryVoltage,"
       "fp_normal_mobInputForceX,fp_normal_mobInputForceY,fp_normal_mobInputForceZ,"
-      "fp_normal_mobInputTorqueBodyX,fp_normal_mobInputTorqueBodyY,fp_normal_mobInputTorqueBodyZ\n";
+      "fp_normal_mobInputTorqueBodyX,fp_normal_mobInputTorqueBodyY,fp_normal_mobInputTorqueBodyZ,"
+      "boxTargetZ,boxT1ZHoldU2\n";
     normal_csv_.flush();
   }
   void write_normal_row(double t, double dt_ms) {
@@ -287,7 +297,7 @@ private:
       return (it != received_.end() && it->second) ? sample : nan;
     };
     std::vector<double> row;
-    row.reserve(54);
+    row.reserve(56);
     row.push_back(t); row.push_back(dt_ms);
     for (double x : mocap_xyz_) row.push_back(mocap_received_ ? x : nan);
     for (double x : attitude_rpy_) row.push_back(cf_pose_received_ ? x : nan);
@@ -310,6 +320,8 @@ private:
     for (double x : rviz_forces_) row.push_back(value("flying_pen_rviz_forces", x));
     for (double x : mob_recovery_) row.push_back(value("flying_pen_mob_recovery", x));
     for (double x : normal_mob_input_) row.push_back(value("flying_pen_mob_input", x));
+    row.push_back(box_diagnostics_received_ ? box_target_z_ : nan);
+    row.push_back(box_diagnostics_received_ ? box_t1_z_hold_u2_ : nan);
 
     normal_csv_ << std::fixed << std::setprecision(9);
     for (size_t i = 0; i < row.size(); ++i) normal_csv_ << (i ? "," : "") << row[i];
@@ -329,8 +341,11 @@ private:
   double normal_last_flush_sec_{0.0};
   bool mocap_received_{false}, cf_pose_received_{false};
   bool cmd_position_received_{false}, position_control_received_{false};
+  bool box_diagnostics_received_{false};
   bool normal_velocity_mode_{false};
   double normal_u1_des_{0.0}, normal_u2_des_{0.0}, normal_force_desired_{0.0};
+  double box_target_z_{std::numeric_limits<double>::quiet_NaN()};
+  double box_t1_z_hold_u2_{std::numeric_limits<double>::quiet_NaN()};
   std::array<double,3> mocap_xyz_{0.0,0.0,0.0}, wall_normal_{0.0,0.0,0.0}, contact_force_{0.0,0.0,0.0};
   std::array<double,4> force_raw_{0.0,0.0,0.0,0.0};
   std::array<double,6> ee_tracking_{0.0,0.0,0.0,0.0,0.0}, torque_bar_{0.0,0.0,0.0,0.0,0.0};
@@ -351,6 +366,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr cf_pose_sub_;
   rclcpp::Subscription<crazyflie_interfaces::msg::Position>::SharedPtr cmd_position_sub_;
   rclcpp::Subscription<crazyflie_interfaces::msg::PositionControl>::SharedPtr position_control_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr box_diagnostics_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tag_sub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher_, normal_publisher_;
   rclcpp::TimerBase::SharedPtr startup_timer_;
