@@ -75,6 +75,7 @@ public:
     bind("cf_mob_actuation", 6, &DataLoggingNode::mob_actuation_);
     bind("cf_imu_trim", 6, &DataLoggingNode::imu_acc_trim_);
     bind("flying_pen_normal_state", 6, &DataLoggingNode::normal_state_);
+    bind("flying_pen_yaw_command", 1, &DataLoggingNode::yaw_command_);
     bind("flying_pen_normal_evidence", 6, &DataLoggingNode::normal_evidence_);
     bind("flying_pen_normal_estimator", 6, &DataLoggingNode::normal_estimator_);
     bind("flying_pen_normal_frame_a", 6, &DataLoggingNode::normal_frame_a_);
@@ -214,8 +215,9 @@ private:
     // The force-control debug blocks are optional and may be intentionally
     // disabled in crazyflies.yaml. Only the blocks required by the active
     // normal-estimator logger should fail the startup check.
-    constexpr std::array<const char *, 8> required_normal_topics = {
+    constexpr std::array<const char *, 9> required_normal_topics = {
       "flying_pen_normal_state",
+      "flying_pen_yaw_command",
       "flying_pen_normal_evidence",
       "flying_pen_normal_estimator",
       "flying_pen_normal_frame_a",
@@ -287,7 +289,7 @@ private:
       "fp_normal_etaHat,fp_normal_batteryVoltage,"
       "fp_normal_mobInputForceX,fp_normal_mobInputForceY,fp_normal_mobInputForceZ,"
       "fp_normal_mobInputTorqueBodyX,fp_normal_mobInputTorqueBodyY,fp_normal_mobInputTorqueBodyZ,"
-      "boxTargetZ,boxT1ZHoldU2\n";
+      "fp_normal_eeCmdYaw,boxTargetZ,boxT1ZHoldU2\n";
     normal_csv_.flush();
   }
   void write_normal_row(double t, double dt_ms) {
@@ -297,7 +299,7 @@ private:
       return (it != received_.end() && it->second) ? sample : nan;
     };
     std::vector<double> row;
-    row.reserve(56);
+    row.reserve(57);
     row.push_back(t); row.push_back(dt_ms);
     for (double x : mocap_xyz_) row.push_back(mocap_received_ ? x : nan);
     for (double x : attitude_rpy_) row.push_back(cf_pose_received_ ? x : nan);
@@ -320,6 +322,7 @@ private:
     for (double x : rviz_forces_) row.push_back(value("flying_pen_rviz_forces", x));
     for (double x : mob_recovery_) row.push_back(value("flying_pen_mob_recovery", x));
     for (double x : normal_mob_input_) row.push_back(value("flying_pen_mob_input", x));
+    row.push_back(value("flying_pen_yaw_command", yaw_command_[0]));
     row.push_back(box_diagnostics_received_ ? box_target_z_ : nan);
     row.push_back(box_diagnostics_received_ ? box_t1_z_hold_u2_ : nan);
 
@@ -353,6 +356,7 @@ private:
   std::array<double,6> mob_input_{0.0,0.0,0.0,0.0,0.0}, mob_actuation_{0.0,0.0,0.0,0.0,0.0};
   std::array<double,6> imu_acc_trim_{0.0,0.0,0.0,0.0,0.0};
   std::array<double,6> normal_state_{0.0,0.0,0.0,0.0,0.0};
+  std::array<double,1> yaw_command_{0.0};
   std::array<double,6> normal_evidence_{0.0,0.0,0.0,0.0,0.0};
   std::array<double,6> normal_estimator_{0.0,0.0,0.0,0.0,0.0};
   std::array<double,6> normal_frame_a_{0.0,0.0,0.0,0.0,0.0};

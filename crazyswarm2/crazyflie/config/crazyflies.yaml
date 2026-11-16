@@ -64,6 +64,9 @@ robot_types:
         flying_pen_normal_state:
           frequency: 20
           vars: [suPosRef.eePosX, suPosRef.eePosY, suPosRef.eePosZ, suPosRef.eeCmdX, suPosRef.eeCmdY, suPosRef.eeCmdZ]
+        flying_pen_yaw_command:
+          frequency: 20
+          vars: [suPosRef.eeCmdYaw]
         flying_pen_normal_evidence:
           frequency: 20
           vars: [suVelMod.vcX, suVelMod.vcY, suVelMod.vcZ, suThrustEff.fContactX, suThrustEff.fContactY, suThrustEff.fContactZ]

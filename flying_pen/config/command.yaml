@@ -33,32 +33,28 @@ command_publisher:
     # ==================================================
     # Experiment 3: contact-frame square drawing (b key)
     # ==================================================
-    # Initial and home positions are end-effector positions [m].
+    # Initial end-effector position [m]. Home is fixed at (0, 0, 0).
     box_start_x: 0.53
-    box_start_y: 0.016
+    box_start_y: 0.0
     box_start_z: 0.76
-    box_home_x: 0.0
-    box_home_y: 0.0
-    box_home_z: 0.0
+
+    # Constant contact-frame speeds used for the horizontal and vertical sides.
+    box_t1_speed: 0.035              # constant t1 command magnitude [m/s]
+    box_t2_speed: 0.035              # constant t2 command magnitude [m/s]
 
     # Square geometry.
-    box_t1_angle_deg: 30.0          # side width; first move opposite t1 to lower-left
-    box_height_m: 0.15              # positive World-Z height change
+    box_t1_angle_deg: 40.0          # relative command yaw magnitude; return target is 0 deg
+    box_height_m: 0.25              # World-Z height of the vertical side [m]
 
-    # Contact-frame tangential commands.
-    box_t1_speed: 0.03              # magnitude of firmware t1 coefficient [m/s]
-    box_t2_max_speed: 0.03          # saturation for firmware t2 coefficient [m/s]
-    box_t2_kp: 1.0                  # P gain [1/s]; too high stays saturated near the target
-    box_t2_ki: 0.15                 # I gain [1/s^2], with conditional anti-windup
-    box_t2_kd: 0.05                 # D gain [-], applied to filtered height-error rate
+    # t2 PID used only to hold World-Z height during t1 motion.
+    box_t2_kp: 3.5
+    box_t2_ki: 0.8
+    box_t2_kd: 0.1
     box_t2_integral_limit: 0.05     # integral-state limit [m*s]
     box_t2_derivative_cutoff_hz: 3.0 # first-order D-term low-pass cutoff [Hz]
-    box_t1_z_hold_kp: 0.5           # t1-only Boom-tip World-Z hold gain [1/s]
-    box_t1_z_hold_vmax: 0.015       # t1-only t2 correction saturation [m/s]
-    box_t1_z_hold_deadband: 0.005   # no t2 correction inside this Z error [m]
-    box_z_tolerance: 0.015          # Boom-tip height termination tolerance [m]
-    box_angle_tolerance_deg: 2.0    # normal-azimuth termination tolerance [deg]
-    box_t1_direction_sign: 1.0      # flip if +t1 changes azimuth opposite to expectation
+
+    # Stop at each corner before changing movement direction.
+    box_point_hold: 7.0             # [s]
 
     # Contact initialization.
     box_force_command: 0.024
@@ -67,11 +63,3 @@ command_publisher:
     # Sequential Z -> Y -> X approach and X -> Y -> Z return.
     box_approach_speed: 0.12
     box_return_speed: 0.12
-    box_position_tolerance: 0.025
-
-    # Feedback and travel safety limits.
-    box_stage_timeout_sec: 35.0
-    box_feedback_timeout_sec: 0.75
-    box_max_t1_travel_m: 1.0
-    box_min_t2_vertical_projection: 0.35
-    box_repeat_continuously: true   # keep drawing; press b again to finish current square and return
